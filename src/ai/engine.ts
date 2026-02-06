@@ -24,7 +24,6 @@ function stripThinkingTags(text: string): string {
 
 /**
  * Parse arguments dari tool call — bisa string (JSON) atau object
- * Qwen3 kadang menyisipkan <think> tags di dalam arguments string
  */
 function parseToolArguments(args: any): any {
   if (typeof args === "object" && args !== null) {
@@ -32,24 +31,19 @@ function parseToolArguments(args: any): any {
   }
 
   if (typeof args === "string") {
-    // Strip thinking tags dulu
     let cleaned = stripThinkingTags(args);
-
-    // Kadang model mengembalikan string kosong setelah strip
     if (!cleaned) return {};
 
-    // Coba parse JSON
     try {
       return JSON.parse(cleaned);
     } catch (e) {
-      // Coba extract JSON dari string (mungkin ada teks tambahan)
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           return JSON.parse(jsonMatch[0]);
         } catch (_) {}
       }
-      console.error("Failed to parse tool arguments:", cleaned);
+      console.error("[AI] Failed to parse tool arguments:", cleaned);
       return {};
     }
   }
@@ -63,9 +57,8 @@ export async function runAI(
   userText: string,
   conversationHistory: ConversationMessage[] = []
 ): Promise<AIResult> {
-  // Bangun tanggal hari ini (WIB = UTC+7)
   const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const currentDate = now.toISOString().split("T")[0]; // YYYY-MM-DD
+  const currentDate = now.toISOString().split("T")[0];
 
   const messages = [
     { role: "system" as const, content: buildSystemPrompt(currentDate) },
@@ -80,50 +73,66 @@ export async function runAI(
     tools: TOOLS as any,
   })) as any;
 
-  // Log raw response untuk debugging
-  console.log("[AI] Raw response:", JSON.stringify(response));
+  console.log("[AI] Raw response keys:", Object.keys(response));
 
-  // Parse response
   const toolCalls: AIResult["toolCalls"] = [];
   let textResponse: string | null = null;
 
-  // 1. Parse tool_calls
-  if (response.tool_calls && Array.isArray(response.tool_calls) && response.tool_calls.length > 0) {
-    for (const tc of response.tool_calls) {
-      const name = tc.name || tc.function?.name;
-      const rawArgs = tc.arguments ?? tc.function?.arguments;
+  // ============================================
+  // 1. Extract tool_calls dari berbagai format
+  // ============================================
+  // Format A: OpenAI-compatible (Cloudflare Workers AI default)
+  //   response.choices[0].message.tool_calls[].function.{name, arguments}
+  // Format B: Legacy/simple
+  //   response.tool_calls[].{name, arguments}
 
-      if (!name) {
-        console.warn("[AI] Tool call without name:", JSON.stringify(tc));
-        continue;
-      }
+  let rawToolCalls: any[] = [];
 
-      const parsedArgs = parseToolArguments(rawArgs);
-      console.log(`[AI] Tool call: ${name}`, JSON.stringify(parsedArgs));
-
-      toolCalls.push({
-        name,
-        arguments: parsedArgs,
-      });
-    }
+  // Coba Format A dulu (OpenAI-compatible)
+  const choiceMessage = response.choices?.[0]?.message;
+  if (choiceMessage?.tool_calls && Array.isArray(choiceMessage.tool_calls)) {
+    rawToolCalls = choiceMessage.tool_calls;
+    console.log(`[AI] Found ${rawToolCalls.length} tool_calls via choices[0].message.tool_calls`);
+  }
+  // Fallback Format B (legacy)
+  else if (response.tool_calls && Array.isArray(response.tool_calls)) {
+    rawToolCalls = response.tool_calls;
+    console.log(`[AI] Found ${rawToolCalls.length} tool_calls via response.tool_calls`);
   }
 
-  // 2. Parse text response
-  // Qwen3 bisa mengembalikan di response, content, atau choices[0].message.content
-  let rawText = response.response
+  // Parse setiap tool call
+  for (const tc of rawToolCalls) {
+    // Name bisa di tc.name (legacy) atau tc.function.name (OpenAI)
+    const name = tc.function?.name ?? tc.name;
+    // Arguments bisa di tc.arguments (legacy) atau tc.function.arguments (OpenAI)
+    const rawArgs = tc.function?.arguments ?? tc.arguments;
+
+    if (!name) {
+      console.warn("[AI] Tool call without name:", JSON.stringify(tc));
+      continue;
+    }
+
+    const parsedArgs = parseToolArguments(rawArgs);
+    console.log(`[AI] Tool call: ${name}`, JSON.stringify(parsedArgs));
+
+    toolCalls.push({ name, arguments: parsedArgs });
+  }
+
+  // ============================================
+  // 2. Extract text response
+  // ============================================
+  let rawText = choiceMessage?.content
+    ?? response.response
     ?? response.content
-    ?? response.choices?.[0]?.message?.content
     ?? null;
 
   if (rawText && typeof rawText === "string") {
-    // Strip thinking tags dari text response juga
     textResponse = stripThinkingTags(rawText) || null;
   }
 
-  // 3. Fallback: jika tidak ada tool_calls DAN tidak ada text,
-  //    coba extract dari response.response yang mungkin berisi JSON
-  if (toolCalls.length === 0 && !textResponse && rawText) {
-    console.warn("[AI] No tool_calls found, raw text:", rawText);
+  // Log jika tidak ada tool calls dan tidak ada text
+  if (toolCalls.length === 0 && !textResponse) {
+    console.warn("[AI] No tool_calls and no text response!");
   }
 
   console.log(`[AI] Parsed: ${toolCalls.length} tool calls, text: ${textResponse ? 'yes' : 'no'}`);

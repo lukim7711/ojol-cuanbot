@@ -11,11 +11,13 @@ export function validateAmount(amount: any): number | null {
 
 /**
  * Sanitize string untuk mencegah injection di reply
+ * PENTING: & harus di-escape DULUAN sebelum < dan >
+ * agar tidak terjadi double-escaping (&lt; → &amp;lt;)
  */
 export function sanitizeString(str: string): string {
   return str
+    .replace(/&/g, "&amp;")  // & harus pertama!
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/&/g, "&amp;")
     .substring(0, 200); // limit panjang
 }

@@ -45,13 +45,19 @@ export async function handleMessage(
     // 6. Format reply
     const reply = formatReply(results, aiResult.textResponse);
 
-    // 7. Kirim reply
-    await ctx.reply(reply, { parse_mode: "HTML" });
+    // 7. Kirim reply (guard: jangan kirim jika kosong)
+    if (reply && reply.trim().length > 0) {
+      await ctx.reply(reply, { parse_mode: "HTML" });
 
-    // 8. Simpan reply bot
-    await saveConversation(env.DB, user.id, "assistant", reply);
+      // 8. Simpan reply bot
+      await saveConversation(env.DB, user.id, "assistant", reply);
+    }
   } catch (error) {
     console.error("Handler error:", error);
-    await ctx.reply("⚠️ Waduh, ada error nih. Coba lagi ya.");
+    try {
+      await ctx.reply("⚠️ Waduh, ada error nih. Coba lagi ya.");
+    } catch (_) {
+      // Jika bahkan error reply gagal, abaikan saja
+    }
   }
 }

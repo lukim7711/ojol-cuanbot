@@ -94,5 +94,14 @@ export function formatReply(
     }
   }
 
-  return lines.join("\n");
+  const reply = lines.join("\n");
+
+  // Fallback: jangan pernah return string kosong
+  // Telegram API akan reject sendMessage dengan body kosong
+  if (!reply) {
+    if (aiText) return aiText;
+    return "✅ Diproses!";
+  }
+
+  return reply;
 }

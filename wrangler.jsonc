@@ -12,7 +12,21 @@
 	},
 	"compatibility_flags": [
 		"nodejs_compat"
-	]
+	],
+	"d1_databases": [
+		{
+		"binding": "DB",
+		"database_name": "cuanbot-db",
+		"database_id": "abb3e1b3-d4c4-4469-a947-f6780ab39f78"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"vars": {
+		"BOT_INFO": "{\"id\":8589118828,\"is_bot\":true,\"first_name\":\"Ojol Finance Assistant\",\"username\":\"ojol_finance_bot\"}"
+	}
+	
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -41,4 +55,5 @@
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
 	 */
 	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	
 }

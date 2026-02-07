@@ -51,14 +51,26 @@ function parseToolArguments(args: any): any {
   return {};
 }
 
+/**
+ * Get current date in WIB (UTC+7) — properly calculated
+ */
+function getWIBDateString(): string {
+  const now = new Date();
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60 * 1000;
+  const wib = new Date(utcMs + 7 * 60 * 60 * 1000);
+  const year = wib.getFullYear();
+  const month = String(wib.getMonth() + 1).padStart(2, "0");
+  const day = String(wib.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export async function runAI(
   env: Env,
   userId: number,
   userText: string,
   conversationHistory: ConversationMessage[] = []
 ): Promise<AIResult> {
-  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const currentDate = now.toISOString().split("T")[0];
+  const currentDate = getWIBDateString();
 
   const messages = [
     { role: "system" as const, content: buildSystemPrompt(currentDate) },
@@ -81,11 +93,6 @@ export async function runAI(
   // ============================================
   // 1. Extract tool_calls dari berbagai format
   // ============================================
-  // Format A: OpenAI-compatible (Cloudflare Workers AI default)
-  //   response.choices[0].message.tool_calls[].function.{name, arguments}
-  // Format B: Legacy/simple
-  //   response.tool_calls[].{name, arguments}
-
   let rawToolCalls: any[] = [];
 
   // Coba Format A dulu (OpenAI-compatible)
@@ -102,9 +109,7 @@ export async function runAI(
 
   // Parse setiap tool call
   for (const tc of rawToolCalls) {
-    // Name bisa di tc.name (legacy) atau tc.function.name (OpenAI)
     const name = tc.function?.name ?? tc.name;
-    // Arguments bisa di tc.arguments (legacy) atau tc.function.arguments (OpenAI)
     const rawArgs = tc.function?.arguments ?? tc.arguments;
 
     if (!name) {
@@ -130,7 +135,6 @@ export async function runAI(
     textResponse = stripThinkingTags(rawText) || null;
   }
 
-  // Log jika tidak ada tool calls dan tidak ada text
   if (toolCalls.length === 0 && !textResponse) {
     console.warn("[AI] No tool_calls and no text response!");
   }

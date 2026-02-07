@@ -13,10 +13,18 @@ export async function recordTransactions(
   sourceText: string
 ): Promise<ToolCallResult> {
   const recorded: any[] = [];
+  const skipped: string[] = [];
 
   for (const t of args.transactions) {
     const amount = validateAmount(t.amount);
-    if (!amount) continue; // skip invalid
+    if (!amount) {
+      // Jangan silent skip — catat yang gagal
+      skipped.push(t.description || "transaksi tidak dikenal");
+      console.warn(
+        `[Transaction] Skipped invalid amount: ${t.amount} for "${t.description}"`
+      );
+      continue;
+    }
 
     const trxDate = getDateFromOffset(t.date_offset ?? 0);
 
@@ -43,5 +51,11 @@ export async function recordTransactions(
     });
   }
 
-  return { type: "transactions_recorded", data: recorded };
+  // Tambahkan info skipped jika ada
+  const result: ToolCallResult = { type: "transactions_recorded", data: recorded };
+  if (skipped.length > 0) {
+    result.message = `⚠️ ${skipped.length} transaksi gagal diproses: ${skipped.join(", ")}`;
+  }
+
+  return result;
 }

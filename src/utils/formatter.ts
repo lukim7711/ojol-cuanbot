@@ -24,13 +24,17 @@ export function formatReply(
   for (const r of results) {
     switch (r.type) {
       case "transactions_recorded":
-        lines.push("✅ <b>Tercatat!</b>");
-        for (const t of r.data) {
-          const icon = t.type === "income" ? "💰" : "💸";
-          const label = t.type === "income" ? "Pemasukan" : "Pengeluaran";
-          lines.push(
-            `${icon} ${label}: ${formatRupiah(t.amount)} — <i>${t.description}</i>`
-          );
+        if (r.data && r.data.length > 0) {
+          lines.push("✅ <b>Tercatat!</b>");
+          for (const t of r.data) {
+            const icon = t.type === "income" ? "💰" : "💸";
+            const label = t.type === "income" ? "Pemasukan" : "Pengeluaran";
+            lines.push(
+              `${icon} ${label}: ${formatRupiah(t.amount)} — <i>${t.description}</i>`
+            );
+          }
+        } else {
+          lines.push("⚠️ Hmm, gue nggak bisa parsing transaksinya. Coba ketik ulang ya, contoh: <i>makan 25rb, bensin 30rb</i>");
         }
         break;
 
@@ -94,5 +98,13 @@ export function formatReply(
     }
   }
 
-  return lines.join("\n");
+  const reply = lines.join("\n");
+
+  // Fallback: jangan pernah return string kosong
+  if (!reply) {
+    if (aiText) return aiText;
+    return "✅ Pesan diterima! Coba ketik ulang dengan format: <i>makan 25rb, dapet 59rb</i>";
+  }
+
+  return reply;
 }

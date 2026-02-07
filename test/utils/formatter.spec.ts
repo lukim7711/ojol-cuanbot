@@ -34,9 +34,9 @@ describe("formatReply", () => {
     expect(result).toBe("Halo! Ada yang bisa dibantu?");
   });
 
-  it("returns empty string when no tool calls and no AI text", () => {
+  it("returns fallback message when no tool calls and no AI text", () => {
     const result = formatReply([], null);
-    expect(result).toBe("");
+    expect(result).toContain("Coba ketik ulang");
   });
 
   // ── transactions_recorded ──

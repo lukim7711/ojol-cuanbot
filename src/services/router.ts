@@ -1,5 +1,5 @@
 import { recordTransactions } from "./transaction";
-import { recordDebt, payDebt, getDebtsList } from "./debt";
+import { recordDebt, payDebt, getDebtsList, getDebtHistory } from "./debt";
 import { getSummary } from "./summary";
 import { editOrDeleteTransaction } from "./edit";
 import { User, ToolCallResult } from "../types/transaction";
@@ -29,7 +29,6 @@ export async function processToolCalls(
       case "record_transactions": {
         const result = await recordTransactions(db, user, call.arguments, sourceText);
         results.push(result);
-        // Check if any income was recorded
         if (result.data && result.data.some((t: any) => t.type === "income")) {
           hasIncome = true;
         }
@@ -53,24 +52,17 @@ export async function processToolCalls(
         break;
 
       case "edit_transaction":
-        results.push(
-          await editOrDeleteTransaction(db, user, call.arguments)
-        );
+        results.push(await editOrDeleteTransaction(db, user, call.arguments));
         break;
 
       case "ask_clarification":
-        results.push({
-          type: "clarification",
-          data: null,
-          message: call.arguments.message,
-        });
+        results.push({ type: "clarification", data: null, message: call.arguments.message });
         break;
 
       case "edit_debt":
         results.push(await editDebt(db, user, call.arguments));
         break;
 
-      // ── Smart Target tools ──
       case "get_daily_target":
         results.push(await getDailyTarget(db, user));
         break;
@@ -95,19 +87,22 @@ export async function processToolCalls(
         results.push(await editGoal(db, user, call.arguments));
         break;
 
+      case "get_debt_history":
+        results.push(await getDebtHistory(db, user, call.arguments));
+        break;
+
       default:
         break;
     }
   }
 
-  // Auto-append target progress after income is recorded
+  // Auto-append target progress after income
   if (hasIncome) {
     try {
       const progress = await getIncomeProgress(db, user);
       if (progress) {
         const progressText = formatTargetProgress(progress);
         if (progressText) {
-          // Append progress to the last transactions_recorded result message
           const lastTrx = results.find((r) => r.type === "transactions_recorded");
           if (lastTrx) {
             lastTrx.message = (lastTrx.message || "") + progressText;

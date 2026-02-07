@@ -59,15 +59,30 @@ export async function insertDebt(
   type: string,
   personName: string,
   amount: number,
+  remaining: number,
   note: string | null,
-  sourceText: string
+  sourceText: string,
+  dueDate: string | null,
+  interestRate: number,
+  interestType: string,
+  tenorMonths: number | null,
+  installmentAmount: number | null,
+  installmentFreq: string,
+  nextPaymentDate: string | null,
+  totalWithInterest: number | null
 ) {
   return db
     .prepare(
-      `INSERT INTO debts (user_id, type, person_name, amount, remaining, note, source_text)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO debts (user_id, type, person_name, amount, remaining, note, source_text,
+       due_date, interest_rate, interest_type, tenor_months, installment_amount,
+       installment_freq, next_payment_date, total_with_interest)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(userId, type, personName, amount, amount, note, sourceText)
+    .bind(
+      userId, type, personName, amount, remaining, note, sourceText,
+      dueDate, interestRate, interestType, tenorMonths, installmentAmount,
+      installmentFreq, nextPaymentDate, totalWithInterest
+    )
     .run();
 }
 
@@ -86,8 +101,17 @@ export async function findActiveDebtByPerson(
     .first<{
       id: number;
       type: string;
+      person_name: string;
       remaining: number;
       amount: number;
+      due_date: string | null;
+      interest_rate: number;
+      interest_type: string;
+      tenor_months: number | null;
+      installment_amount: number | null;
+      installment_freq: string;
+      next_payment_date: string | null;
+      total_with_interest: number | null;
     }>();
 }
 
@@ -107,6 +131,17 @@ export async function updateDebtRemaining(
     .run();
 }
 
+export async function updateDebtNextPayment(
+  db: D1Database,
+  debtId: number,
+  nextPaymentDate: string | null
+) {
+  return db
+    .prepare(`UPDATE debts SET next_payment_date = ? WHERE id = ?`)
+    .bind(nextPaymentDate, debtId)
+    .run();
+}
+
 export async function insertDebtPayment(
   db: D1Database,
   debtId: number,
@@ -119,6 +154,18 @@ export async function insertDebtPayment(
     )
     .bind(debtId, amount, sourceText)
     .run();
+}
+
+export async function getDebtPayments(
+  db: D1Database,
+  debtId: number
+) {
+  return db
+    .prepare(
+      `SELECT amount, paid_at FROM debt_payments WHERE debt_id = ? ORDER BY paid_at ASC`
+    )
+    .bind(debtId)
+    .all<{ amount: number; paid_at: number }>();
 }
 
 // ── SUMMARY ──
@@ -171,7 +218,7 @@ export async function getRecentConversation(
     .bind(userId, limit)
     .all<{ role: string; content: string }>();
 
-  return result.results.reverse(); // urutan kronologis
+  return result.results.reverse();
 }
 
 export async function saveConversation(

@@ -13,6 +13,7 @@ import {
   updateGoalStatus,
 } from "../db/repository-target";
 import { getActiveDebts } from "../db/repository";
+import { getDebtStatus } from "./debt";
 import { getDateFromOffset } from "../utils/date";
 import { validateAmount } from "../utils/validator";
 import { sanitizeString } from "../utils/validator";
@@ -20,7 +21,7 @@ import { User, ToolCallResult } from "../types/transaction";
 
 export interface TargetBreakdown {
   obligations: Array<{ name: string; dailyAmount: number }>;
-  debtInstallments: Array<{ name: string; dailyAmount: number }>;
+  debtInstallments: Array<{ name: string; dailyAmount: number; isOverdue: boolean; isUrgent: boolean }>;
   avgOperational: number;
   dailySaving: number;
   goals: Array<{ name: string; dailyAmount: number }>;
@@ -49,12 +50,48 @@ export async function calculateDailyTarget(
     return { name: o.name, dailyAmount };
   });
 
-  // 2. Cicilan hutang aktif (bagi rata sisa hutang / 30 hari default)
+  // 2. Cicilan hutang aktif — smart prioritization
   const debtResult = await getActiveDebts(db, user.id);
-  const debtInstallments = (debtResult.results as any[]).map((d) => ({
-    name: `Hutang ${d.person_name}`,
-    dailyAmount: Math.round(d.remaining / 30),
-  }));
+  const debtInstallments = (debtResult.results as any[]).map((d) => {
+    const status = getDebtStatus(d.due_date, d.next_payment_date, today);
+
+    let dailyAmount: number;
+    if (d.installment_amount) {
+      // User sudah set cicilan → bagi per hari sesuai frekuensi
+      if (d.installment_freq === "daily") {
+        dailyAmount = d.installment_amount;
+      } else if (d.installment_freq === "weekly") {
+        dailyAmount = Math.round(d.installment_amount / 7);
+      } else {
+        dailyAmount = Math.round(d.installment_amount / 30);
+      }
+    } else if (d.due_date) {
+      // Ada jatuh tempo → bagi sisa hutang per sisa hari
+      const daysLeft = Math.max(1, status.daysLeft);
+      dailyAmount = Math.round(d.remaining / daysLeft);
+    } else {
+      // Default: bagi rata 30 hari
+      dailyAmount = Math.round(d.remaining / 30);
+    }
+
+    // Overdue: tambah urgency — harus bayar HARI INI
+    if (status.isOverdue) {
+      dailyAmount = d.installment_amount || d.remaining;
+    }
+
+    const label = d.type === "hutang" ? `Hutang ${d.person_name}` : `Piutang ${d.person_name}`;
+
+    return {
+      name: status.isOverdue
+        ? `${label} (⚠️ TELAT ${Math.abs(status.daysLeft)} hari!)`
+        : status.status === "urgent"
+        ? `${label} (⏳ ${status.daysLeft} hari lagi)`
+        : label,
+      dailyAmount,
+      isOverdue: status.isOverdue,
+      isUrgent: status.status === "urgent",
+    };
+  });
 
   // 3. Rata-rata operasional 7 hari terakhir
   const weekAgo = getDateFromOffset(-7);
@@ -102,9 +139,6 @@ export async function calculateDailyTarget(
   };
 }
 
-/**
- * Handle get_daily_target tool call
- */
 export async function getDailyTarget(
   db: D1Database,
   user: User
@@ -113,9 +147,6 @@ export async function getDailyTarget(
   return { type: "daily_target" as any, data: breakdown };
 }
 
-/**
- * Handle set_obligation tool call
- */
 export async function setObligation(
   db: D1Database,
   user: User,
@@ -124,32 +155,15 @@ export async function setObligation(
 ): Promise<ToolCallResult> {
   const amount = validateAmount(args.amount);
   if (!amount) {
-    return {
-      type: "clarification",
-      data: null,
-      message: "Jumlah kewajiban tidak valid. Coba lagi ya bos.",
-    };
+    return { type: "clarification", data: null, message: "Jumlah kewajiban tidak valid. Coba lagi ya bos." };
   }
 
   const freq = args.frequency || "daily";
-  const result = await insertObligation(
-    db, user.id,
-    sanitizeString(args.name),
-    amount,
-    freq,
-    args.note ? sanitizeString(args.note) : null,
-    sourceText
-  );
+  await insertObligation(db, user.id, sanitizeString(args.name), amount, freq, args.note ? sanitizeString(args.note) : null, sourceText);
 
-  return {
-    type: "obligation_set" as any,
-    data: { name: args.name, amount, frequency: freq },
-  };
+  return { type: "obligation_set" as any, data: { name: args.name, amount, frequency: freq } };
 }
 
-/**
- * Handle set_goal tool call
- */
 export async function setGoal(
   db: D1Database,
   user: User,
@@ -158,31 +172,15 @@ export async function setGoal(
 ): Promise<ToolCallResult> {
   const amount = validateAmount(args.target_amount);
   if (!amount) {
-    return {
-      type: "clarification",
-      data: null,
-      message: "Jumlah target tidak valid. Coba lagi ya bos.",
-    };
+    return { type: "clarification", data: null, message: "Jumlah target tidak valid. Coba lagi ya bos." };
   }
 
   const days = args.deadline_days || 30;
-  const result = await insertGoal(
-    db, user.id,
-    sanitizeString(args.name),
-    amount,
-    days,
-    sourceText
-  );
+  await insertGoal(db, user.id, sanitizeString(args.name), amount, days, sourceText);
 
-  return {
-    type: "goal_set" as any,
-    data: { name: args.name, target_amount: amount, deadline_days: days, daily: Math.round(amount / days) },
-  };
+  return { type: "goal_set" as any, data: { name: args.name, target_amount: amount, deadline_days: days, daily: Math.round(amount / days) } };
 }
 
-/**
- * Handle set_saving tool call
- */
 export async function setSaving(
   db: D1Database,
   user: User,
@@ -190,53 +188,31 @@ export async function setSaving(
 ): Promise<ToolCallResult> {
   const amount = validateAmount(args.amount);
   if (!amount) {
-    return {
-      type: "clarification",
-      data: null,
-      message: "Jumlah tabungan tidak valid. Coba lagi ya bos.",
-    };
+    return { type: "clarification", data: null, message: "Jumlah tabungan tidak valid. Coba lagi ya bos." };
   }
 
   await upsertUserSetting(db, user.id, "daily_saving", String(amount));
-
-  return {
-    type: "saving_set" as any,
-    data: { daily_saving: amount },
-  };
+  return { type: "saving_set" as any, data: { daily_saving: amount } };
 }
 
-/**
- * Handle edit_obligation tool call
- */
 export async function editObligation(
   db: D1Database,
   user: User,
-  args: { action: string; name: string; new_amount?: number }
+  args: { action: string; name: string }
 ): Promise<ToolCallResult> {
   const obl = await findObligationByName(db, user.id, args.name);
   if (!obl) {
-    return {
-      type: "clarification",
-      data: null,
-      message: `Kewajiban "${args.name}" tidak ditemukan. Cek lagi ya bos.`,
-    };
+    return { type: "clarification", data: null, message: `Kewajiban "${args.name}" tidak ditemukan. Cek lagi ya bos.` };
   }
 
   if (args.action === "delete" || args.action === "done") {
     await updateObligationStatus(db, obl.id, "done");
-    return {
-      type: "edited" as any,
-      data: null,
-      message: `Kewajiban "${obl.name}" sudah dihapus/selesai.`,
-    };
+    return { type: "edited" as any, data: null, message: `Kewajiban "${obl.name}" sudah dihapus/selesai.` };
   }
 
   return { type: "clarification", data: null, message: "Aksi tidak dikenal." };
 }
 
-/**
- * Handle edit_goal tool call
- */
 export async function editGoal(
   db: D1Database,
   user: User,
@@ -244,42 +220,26 @@ export async function editGoal(
 ): Promise<ToolCallResult> {
   const goal = await findGoalByName(db, user.id, args.name);
   if (!goal) {
-    return {
-      type: "clarification",
-      data: null,
-      message: `Goal "${args.name}" tidak ditemukan. Cek lagi ya bos.`,
-    };
+    return { type: "clarification", data: null, message: `Goal "${args.name}" tidak ditemukan. Cek lagi ya bos.` };
   }
 
   if (args.action === "cancel") {
     await updateGoalStatus(db, goal.id, "cancelled");
-    return {
-      type: "edited" as any,
-      data: null,
-      message: `Goal "${goal.name}" sudah dibatalkan.`,
-    };
+    return { type: "edited" as any, data: null, message: `Goal "${goal.name}" sudah dibatalkan.` };
   }
 
   if (args.action === "done") {
     await updateGoalStatus(db, goal.id, "achieved");
-    return {
-      type: "edited" as any,
-      data: null,
-      message: `🎉 Goal "${goal.name}" tercapai!`,
-    };
+    return { type: "edited" as any, data: null, message: `🎉 Goal "${goal.name}" tercapai!` };
   }
 
   return { type: "clarification", data: null, message: "Aksi tidak dikenal." };
 }
 
-/**
- * Get income progress for auto-display after recording income
- */
 export async function getIncomeProgress(
   db: D1Database,
   user: User
 ): Promise<TargetBreakdown | null> {
-  // Only show progress if user has any target components set up
   const oblResult = await getActiveObligations(db, user.id);
   const goalsResult = await getActiveGoals(db, user.id);
   const savingSetting = await getUserSetting(db, user.id, "daily_saving");

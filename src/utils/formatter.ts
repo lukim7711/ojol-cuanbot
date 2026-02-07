@@ -92,30 +92,43 @@ export function formatReply(
         const d = r.data;
         const dIcon = d.type === "hutang" ? "\ud83d\udd34" : "\ud83d\udfe2";
         const dLabel = d.type === "hutang" ? "Hutang ke" : "Piutang dari";
-        lines.push(`${dIcon} ${dLabel} <b>${d.person_name}</b>: ${formatRupiah(d.amount)}`);
 
-        // Show remaining if different from amount (hutang lama)
-        if (d.remaining && d.remaining !== d.amount && d.remaining !== d.total_with_interest) {
-          lines.push(`   \u21b3 Sisa: ${formatRupiah(d.remaining)}`);
-        }
-
-        // Interest info
+        // For debts with interest, show principal as "Pokok" separately
         if (d.interest_type && d.interest_type !== "none" && d.interest_rate > 0) {
+          lines.push(`${dIcon} ${dLabel} <b>${d.person_name}</b>`);
+          lines.push(`   \ud83d\udccc Pokok: ${formatRupiah(d.amount)}`);
+
           const ratePercent = (d.interest_rate * 100).toFixed(1);
           const typeLabel = d.interest_type === "flat" ? "flat" : "harian";
-          lines.push(`   \ud83d\udcc8 Bunga: ${ratePercent}%/${d.interest_type === "daily" ? "hari" : "bulan"} (${typeLabel})`);
+          const perLabel = d.interest_type === "daily" ? "hari" : "bulan";
+          lines.push(`   \ud83d\udcc8 Bunga: ${ratePercent}%/${perLabel} (${typeLabel})`);
+
           if (d.total_with_interest && d.total_with_interest !== d.amount) {
             lines.push(`   \ud83d\udcb5 Total bayar: ${formatRupiah(d.total_with_interest)}`);
           }
-        }
+          if (d.tenor_months) {
+            lines.push(`   \ud83d\udcc5 Tenor: ${d.tenor_months} bulan`);
+          }
+          if (d.installment_amount) {
+            const freqLabel = d.installment_freq === "daily" ? "hari" : d.installment_freq === "weekly" ? "minggu" : "bulan";
+            lines.push(`   \ud83d\udcb3 Cicilan: ${formatRupiah(d.installment_amount)}/${freqLabel}`);
+          }
+        } else {
+          // Simple debt without interest
+          lines.push(`${dIcon} ${dLabel} <b>${d.person_name}</b>: ${formatRupiah(d.amount)}`);
 
-        // Tenor + installment
-        if (d.tenor_months) {
-          lines.push(`   \ud83d\udcc5 Tenor: ${d.tenor_months} bulan`);
-        }
-        if (d.installment_amount) {
-          const freqLabel = d.installment_freq === "daily" ? "hari" : d.installment_freq === "weekly" ? "minggu" : "bulan";
-          lines.push(`   \ud83d\udcb3 Cicilan: ${formatRupiah(d.installment_amount)}/${freqLabel}`);
+          // Show remaining if different from amount (hutang lama)
+          if (d.remaining && d.remaining !== d.amount) {
+            lines.push(`   \u21b3 Sisa: ${formatRupiah(d.remaining)}`);
+          }
+
+          if (d.tenor_months) {
+            lines.push(`   \ud83d\udcc5 Tenor: ${d.tenor_months} bulan`);
+          }
+          if (d.installment_amount) {
+            const freqLabel = d.installment_freq === "daily" ? "hari" : d.installment_freq === "weekly" ? "minggu" : "bulan";
+            lines.push(`   \ud83d\udcb3 Cicilan: ${formatRupiah(d.installment_amount)}/${freqLabel}`);
+          }
         }
 
         // Due date
@@ -169,11 +182,14 @@ export function formatReply(
         if (debts.length === 0) {
           lines.push("\u2728 Tidak ada hutang/piutang aktif!");
         } else {
-          lines.push("\ud83d\udccb <b>Daftar Hutang/Piutang Aktif:</b>");
+          lines.push("\ud83d\udccb <b>Daftar Hutang/Piutang Aktif:</b>\n");
           for (const d of debts) {
             const icon = d.type === "hutang" ? "\ud83d\udd34" : "\ud83d\udfe2";
             const label = d.type === "hutang" ? "Hutang ke" : "Piutang dari";
-            let line = `${icon} ${label} <b>${d.person_name}</b>: ${formatRupiah(d.remaining)} / ${formatRupiah(d.amount)}`;
+
+            // Use total_with_interest as the "total" if available, else amount
+            const totalDebt = d.total_with_interest || d.amount;
+            let line = `${icon} ${label} <b>${d.person_name}</b>: ${formatRupiah(d.remaining)} / ${formatRupiah(totalDebt)}`;
 
             // Due date info
             if (d.due_date) {
@@ -227,7 +243,7 @@ export function formatReply(
           for (let i = 0; i < h.payments.length; i++) {
             const p = h.payments[i];
             const date = new Date(p.paid_at * 1000);
-            const dateStr = `${date.getDate()}/${date.getMonth() + 1}`;
+            const dateStr = `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
             lines.push(`  ${i + 1}. ${dateStr} \u2014 ${formatRupiah(p.amount)}`);
           }
         } else {

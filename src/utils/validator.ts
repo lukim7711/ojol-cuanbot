@@ -1,12 +1,17 @@
 /**
- * Validasi amount yang dihasilkan AI sebelum insert ke DB
+ * Validasi amount yang dihasilkan AI sebelum insert ke DB.
+ * Gunakan Math.round() karena AI kadang kirim float (4000.0, 59000.5).
  */
 export function validateAmount(amount: any): number | null {
   const num = Number(amount);
-  if (isNaN(num) || num <= 0 || num > 100_000_000 || !Number.isInteger(num)) {
+  if (isNaN(num) || num <= 0 || num > 100_000_000) {
     return null;
   }
-  return num;
+  const rounded = Math.round(num);
+  if (rounded <= 0 || rounded > 100_000_000) {
+    return null;
+  }
+  return rounded;
 }
 
 /**

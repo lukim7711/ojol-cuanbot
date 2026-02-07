@@ -19,6 +19,23 @@ describe("validateAmount", () => {
     expect(validateAmount(1)).toBe(1);
   });
 
+  // ── Float handling (AI sering kirim float) ──
+  it("rounds .0 float to integer", () => {
+    expect(validateAmount(4000.0)).toBe(4000);
+  });
+
+  it("rounds .5 float to nearest integer", () => {
+    expect(validateAmount(59000.5)).toBe(59001);
+  });
+
+  it("rounds .3 float down", () => {
+    expect(validateAmount(25000.3)).toBe(25000);
+  });
+
+  it("rounds .9 float up", () => {
+    expect(validateAmount(7999.9)).toBe(8000);
+  });
+
   // ── Invalid cases ──
   it("returns null for zero", () => {
     expect(validateAmount(0)).toBeNull();
@@ -30,10 +47,6 @@ describe("validateAmount", () => {
 
   it("returns null for amount exceeding 100 million", () => {
     expect(validateAmount(100_000_001)).toBeNull();
-  });
-
-  it("returns null for decimal/float", () => {
-    expect(validateAmount(59000.5)).toBeNull();
   });
 
   it("returns null for NaN input (string)", () => {
@@ -53,9 +66,8 @@ describe("validateAmount", () => {
   });
 
   it("returns null for boolean true (coerces to 1 but is not integer-intent)", () => {
-    // Number(true) = 1, which is valid — this tests the actual behavior
     const result = validateAmount(true);
-    // true → Number(true) = 1 → isInteger(1) = true → returns 1
+    // true → Number(true) = 1 → Math.round(1) = 1 → returns 1
     expect(result).toBe(1);
   });
 });
@@ -91,7 +103,6 @@ describe("sanitizeString", () => {
     const result = sanitizeString("<>&");
     expect(result).not.toContain("<");
     expect(result).not.toContain(">");
-    // Note: & in "&lt;" gets escaped again — this tests actual behavior
     expect(result.length).toBeGreaterThan(0);
   });
 });

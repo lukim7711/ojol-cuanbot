@@ -39,7 +39,8 @@ export interface ParsedSummaryRequest {
 // ── Tool Call Result (internal) ──
 export interface ToolCallResult {
   type: "transactions_recorded" | "debt_recorded" | "debt_paid"
-       | "summary" | "debts_list" | "edited" | "clarification" | "chat";
+       | "summary" | "debts_list" | "edited" | "clarification" | "chat"
+       | "daily_target" | "obligation_set" | "goal_set" | "saving_set";
   data: any;
   message?: string;
 }

@@ -3,8 +3,17 @@ import { recordDebt, payDebt, getDebtsList } from "./debt";
 import { getSummary } from "./summary";
 import { editOrDeleteTransaction } from "./edit";
 import { User, ToolCallResult } from "../types/transaction";
-// Tambahkan import
 import { editDebt } from "./edit-debt";
+import {
+  getDailyTarget,
+  setObligation,
+  setGoal,
+  setSaving,
+  editObligation,
+  editGoal,
+  getIncomeProgress,
+} from "./target";
+import { formatTargetProgress } from "../utils/formatter";
 
 export async function processToolCalls(
   db: D1Database,
@@ -13,14 +22,19 @@ export async function processToolCalls(
   sourceText: string
 ): Promise<ToolCallResult[]> {
   const results: ToolCallResult[] = [];
+  let hasIncome = false;
 
   for (const call of toolCalls) {
     switch (call.name) {
-      case "record_transactions":
-        results.push(
-          await recordTransactions(db, user, call.arguments, sourceText)
-        );
+      case "record_transactions": {
+        const result = await recordTransactions(db, user, call.arguments, sourceText);
+        results.push(result);
+        // Check if any income was recorded
+        if (result.data && result.data.some((t: any) => t.type === "income")) {
+          hasIncome = true;
+        }
         break;
+      }
 
       case "record_debt":
         results.push(await recordDebt(db, user, call.arguments, sourceText));
@@ -56,9 +70,52 @@ export async function processToolCalls(
         results.push(await editDebt(db, user, call.arguments));
         break;
 
-      default:
-        // Unknown tool — ignore
+      // ── Smart Target tools ──
+      case "get_daily_target":
+        results.push(await getDailyTarget(db, user));
         break;
+
+      case "set_obligation":
+        results.push(await setObligation(db, user, call.arguments, sourceText));
+        break;
+
+      case "set_goal":
+        results.push(await setGoal(db, user, call.arguments, sourceText));
+        break;
+
+      case "set_saving":
+        results.push(await setSaving(db, user, call.arguments));
+        break;
+
+      case "edit_obligation":
+        results.push(await editObligation(db, user, call.arguments));
+        break;
+
+      case "edit_goal":
+        results.push(await editGoal(db, user, call.arguments));
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  // Auto-append target progress after income is recorded
+  if (hasIncome) {
+    try {
+      const progress = await getIncomeProgress(db, user);
+      if (progress) {
+        const progressText = formatTargetProgress(progress);
+        if (progressText) {
+          // Append progress to the last transactions_recorded result message
+          const lastTrx = results.find((r) => r.type === "transactions_recorded");
+          if (lastTrx) {
+            lastTrx.message = (lastTrx.message || "") + progressText;
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[Target] Failed to calculate progress:", e);
     }
   }
 

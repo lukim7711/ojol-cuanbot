@@ -146,20 +146,116 @@ export const TOOLS = [
     },
   },
   {
-  type: "function" as const,
-  function: {
-    name: "edit_debt",
-    description: "Koreksi atau hapus data hutang/piutang yang sudah dicatat.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["edit", "delete"] },
-        person_name: { type: "string", description: "Nama orang pada hutang yang dimaksud" },
-        new_amount: { type: "integer", description: "Jumlah baru (hanya untuk edit)" },
+    type: "function" as const,
+    function: {
+      name: "edit_debt",
+      description: "Koreksi atau hapus data hutang/piutang yang sudah dicatat.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["edit", "delete"] },
+          person_name: { type: "string", description: "Nama orang pada hutang yang dimaksud" },
+          new_amount: { type: "integer", description: "Jumlah baru (hanya untuk edit)" },
+        },
+        required: ["action", "person_name"],
       },
-      required: ["action", "person_name"],
     },
   },
-},
-
+  // ── Smart Daily Target tools ──
+  {
+    type: "function" as const,
+    function: {
+      name: "get_daily_target",
+      description: "Tampilkan target harian yang dihitung otomatis berdasarkan kewajiban, hutang, operasional, tabungan, dan goals user.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "set_obligation",
+      description: "Catat kewajiban tetap/rutin (cicilan, kontrakan, iuran, dll) yang harus dibayar secara berkala.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Nama kewajiban, misal: 'cicilan GoPay Pinjam'" },
+          amount: { type: "integer", description: "Jumlah dalam Rupiah" },
+          frequency: {
+            type: "string",
+            enum: ["daily", "weekly", "monthly"],
+            description: "Frekuensi: daily (harian), weekly (mingguan), monthly (bulanan). Default: daily",
+          },
+          note: { type: "string", description: "Catatan opsional" },
+        },
+        required: ["name", "amount"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "set_goal",
+      description: "Set goal/target menabung untuk beli sesuatu atau mencapai target tertentu.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Nama goal, misal: 'beli helm baru'" },
+          target_amount: { type: "integer", description: "Jumlah target dalam Rupiah" },
+          deadline_days: {
+            type: "integer",
+            description: "Target tercapai dalam berapa hari. Default: 30",
+          },
+        },
+        required: ["name", "target_amount"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "set_saving",
+      description: "Set jumlah tabungan minimum harian.",
+      parameters: {
+        type: "object",
+        properties: {
+          amount: { type: "integer", description: "Jumlah tabungan per hari dalam Rupiah" },
+        },
+        required: ["amount"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "edit_obligation",
+      description: "Hapus atau tandai selesai kewajiban tetap yang sudah dicatat.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["delete", "done"] },
+          name: { type: "string", description: "Nama kewajiban yang dimaksud" },
+        },
+        required: ["action", "name"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "edit_goal",
+      description: "Batalkan atau tandai tercapai goal yang sudah dicatat.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["cancel", "done"] },
+          name: { type: "string", description: "Nama goal yang dimaksud" },
+        },
+        required: ["action", "name"],
+      },
+    },
+  },
 ] as const;

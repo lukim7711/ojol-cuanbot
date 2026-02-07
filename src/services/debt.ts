@@ -51,7 +51,7 @@ function resolveDueDate(
       }
     }
 
-    const dueDate = `${nextYear}-${String(nextMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const nextPayDate = `${nextYear}-${String(nextMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
     // For tenor-based debts, calculate final due date
     if (args.tenor_months) {
@@ -62,10 +62,10 @@ function resolveDueDate(
         finalYear++;
       }
       const finalDueDate = `${finalYear}-${String(finalMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      return { dueDate: finalDueDate, nextPaymentDate: dueDate };
+      return { dueDate: finalDueDate, nextPaymentDate: nextPayDate };
     }
 
-    return { dueDate: dueDate, nextPaymentDate: dueDate };
+    return { dueDate: nextPayDate, nextPaymentDate: nextPayDate };
   }
 
   return { dueDate: null, nextPaymentDate: null };
@@ -99,7 +99,6 @@ function calculateInterest(
   }
 
   if (type === "daily") {
-    // Daily interest: rate per day × tenor in days
     const days = (tenorMonths || 1) * 30;
     const totalInterest = Math.round(principal * rate * days);
     const total = principal + totalInterest;

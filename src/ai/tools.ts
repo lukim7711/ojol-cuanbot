@@ -1,6 +1,3 @@
-// Definisi tools untuk Workers AI function calling
-// Ref: https://developers.cloudflare.com/workers-ai/features/function-calling/traditional/
-
 export const TOOLS = [
   {
     type: "function" as const,
@@ -16,28 +13,11 @@ export const TOOLS = [
             items: {
               type: "object",
               properties: {
-                type: {
-                  type: "string",
-                  enum: ["income", "expense"],
-                  description: "income = pemasukan, expense = pengeluaran",
-                },
-                amount: {
-                  type: "integer",
-                  description: "Jumlah dalam Rupiah penuh (integer). Contoh: 59000, 1500000",
-                },
-                category: {
-                  type: "string",
-                  description:
-                    "Kategori: orderan, bonus, tip, lainnya (income) atau makan, bensin, servis, pulsa, rokok, parkir, lainnya (expense)",
-                },
-                description: {
-                  type: "string",
-                  description: "Deskripsi singkat, misal: 'makan di bu tami'",
-                },
-                date_offset: {
-                  type: "integer",
-                  description: "0 = hari ini, -1 = kemarin, -2 = 2 hari lalu. Default: 0",
-                },
+                type: { type: "string", enum: ["income", "expense"] },
+                amount: { type: "integer", description: "Jumlah dalam Rupiah" },
+                category: { type: "string" },
+                description: { type: "string" },
+                date_offset: { type: "integer", description: "0=hari ini, -1=kemarin" },
               },
               required: ["type", "amount", "category", "description"],
             },
@@ -52,14 +32,23 @@ export const TOOLS = [
     function: {
       name: "record_debt",
       description:
-        "Catat hutang baru (user berhutang ke orang lain) atau piutang baru (orang lain berhutang ke user).",
+        "Catat hutang/piutang baru ATAU hutang lama yang baru diinput. Mendukung jatuh tempo, bunga, tenor, dan cicilan.",
       parameters: {
         type: "object",
         properties: {
           type: { type: "string", enum: ["hutang", "piutang"] },
-          person_name: { type: "string", description: "Nama orang terkait" },
-          amount: { type: "integer", description: "Jumlah dalam Rupiah" },
+          person_name: { type: "string", description: "Nama orang/lembaga" },
+          amount: { type: "integer", description: "Jumlah pokok dalam Rupiah" },
+          remaining: { type: "integer", description: "Sisa hutang saat ini (untuk hutang lama yang sudah pernah dicicil). Jika baru, kosongkan." },
           note: { type: "string", description: "Catatan opsional" },
+          due_date: { type: "string", description: "Tanggal jatuh tempo format YYYY-MM-DD. Gunakan ini jika user sebut tanggal spesifik." },
+          due_date_days: { type: "integer", description: "Jatuh tempo dalam X hari dari sekarang. Gunakan ini jika user bilang 'jatuh tempo 2 minggu'." },
+          recurring_day: { type: "integer", description: "Tanggal berulang tiap bulan (1-28). Gunakan ini jika user bilang 'tiap tanggal 15'." },
+          interest_rate: { type: "number", description: "Suku bunga dalam desimal. 2% = 0.02" },
+          interest_type: { type: "string", enum: ["none", "flat", "daily"], description: "Tipe bunga: none (tanpa bunga), flat (bunga tetap per bulan), daily (bunga harian)" },
+          tenor_months: { type: "integer", description: "Lama pinjaman dalam bulan" },
+          installment_amount: { type: "integer", description: "Jumlah cicilan per periode dalam Rupiah" },
+          installment_freq: { type: "string", enum: ["daily", "weekly", "monthly"], description: "Frekuensi cicilan" },
         },
         required: ["type", "person_name", "amount"],
       },
@@ -69,12 +58,11 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "pay_debt",
-      description:
-        "Catat pembayaran/cicilan hutang atau penerimaan pembayaran piutang.",
+      description: "Catat pembayaran/cicilan hutang atau penerimaan pembayaran piutang.",
       parameters: {
         type: "object",
         properties: {
-          person_name: { type: "string", description: "Nama orang" },
+          person_name: { type: "string" },
           amount: { type: "integer", description: "Jumlah yang dibayar" },
         },
         required: ["person_name", "amount"],
@@ -89,12 +77,9 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          period: {
-            type: "string",
-            enum: ["today", "yesterday", "this_week", "this_month", "custom"],
-          },
-          custom_start: { type: "string", description: "YYYY-MM-DD" },
-          custom_end: { type: "string", description: "YYYY-MM-DD" },
+          period: { type: "string", enum: ["today", "yesterday", "this_week", "this_month", "custom"] },
+          custom_start: { type: "string" },
+          custom_end: { type: "string" },
         },
         required: ["period"],
       },
@@ -104,7 +89,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_debts",
-      description: "Lihat daftar hutang dan/atau piutang yang masih aktif.",
+      description: "Lihat daftar hutang dan/atau piutang yang masih aktif, termasuk status jatuh tempo.",
       parameters: {
         type: "object",
         properties: {
@@ -117,14 +102,28 @@ export const TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "get_debt_history",
+      description: "Lihat riwayat pembayaran hutang tertentu.",
+      parameters: {
+        type: "object",
+        properties: {
+          person_name: { type: "string", description: "Nama orang/lembaga" },
+        },
+        required: ["person_name"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "edit_transaction",
       description: "Koreksi atau hapus transaksi yang sudah dicatat.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["edit", "delete"] },
-          target: { type: "string", description: "Deskripsi transaksi yang dimaksud" },
-          new_amount: { type: "integer", description: "Jumlah baru (hanya untuk edit)" },
+          target: { type: "string" },
+          new_amount: { type: "integer" },
         },
         required: ["action", "target"],
       },
@@ -134,12 +133,11 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "ask_clarification",
-      description:
-        "Gunakan HANYA jika pesan user ambigu atau data kurang lengkap untuk dicatat.",
+      description: "Gunakan HANYA jika pesan user ambigu atau data kurang lengkap.",
       parameters: {
         type: "object",
         properties: {
-          message: { type: "string", description: "Pertanyaan klarifikasi" },
+          message: { type: "string" },
         },
         required: ["message"],
       },
@@ -154,42 +152,33 @@ export const TOOLS = [
         type: "object",
         properties: {
           action: { type: "string", enum: ["edit", "delete"] },
-          person_name: { type: "string", description: "Nama orang pada hutang yang dimaksud" },
-          new_amount: { type: "integer", description: "Jumlah baru (hanya untuk edit)" },
+          person_name: { type: "string" },
+          new_amount: { type: "integer" },
         },
         required: ["action", "person_name"],
       },
     },
   },
-  // ── Smart Daily Target tools ──
   {
     type: "function" as const,
     function: {
       name: "get_daily_target",
-      description: "Tampilkan target harian yang dihitung otomatis berdasarkan kewajiban, hutang, operasional, tabungan, dan goals user.",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
+      description: "Tampilkan target harian otomatis berdasarkan kewajiban, hutang, operasional, tabungan, dan goals.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
   {
     type: "function" as const,
     function: {
       name: "set_obligation",
-      description: "Catat kewajiban tetap/rutin (cicilan, kontrakan, iuran, dll) yang harus dibayar secara berkala.",
+      description: "Catat kewajiban tetap/rutin (cicilan, kontrakan, iuran, dll).",
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string", description: "Nama kewajiban, misal: 'cicilan GoPay Pinjam'" },
-          amount: { type: "integer", description: "Jumlah dalam Rupiah" },
-          frequency: {
-            type: "string",
-            enum: ["daily", "weekly", "monthly"],
-            description: "Frekuensi: daily (harian), weekly (mingguan), monthly (bulanan). Default: daily",
-          },
-          note: { type: "string", description: "Catatan opsional" },
+          name: { type: "string" },
+          amount: { type: "integer" },
+          frequency: { type: "string", enum: ["daily", "weekly", "monthly"] },
+          note: { type: "string" },
         },
         required: ["name", "amount"],
       },
@@ -199,16 +188,13 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_goal",
-      description: "Set goal/target menabung untuk beli sesuatu atau mencapai target tertentu.",
+      description: "Set goal/target menabung untuk beli sesuatu.",
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string", description: "Nama goal, misal: 'beli helm baru'" },
-          target_amount: { type: "integer", description: "Jumlah target dalam Rupiah" },
-          deadline_days: {
-            type: "integer",
-            description: "Target tercapai dalam berapa hari. Default: 30",
-          },
+          name: { type: "string" },
+          target_amount: { type: "integer" },
+          deadline_days: { type: "integer" },
         },
         required: ["name", "target_amount"],
       },
@@ -222,7 +208,7 @@ export const TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          amount: { type: "integer", description: "Jumlah tabungan per hari dalam Rupiah" },
+          amount: { type: "integer" },
         },
         required: ["amount"],
       },
@@ -232,12 +218,12 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_obligation",
-      description: "Hapus atau tandai selesai kewajiban tetap yang sudah dicatat.",
+      description: "Hapus atau tandai selesai kewajiban tetap.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["delete", "done"] },
-          name: { type: "string", description: "Nama kewajiban yang dimaksud" },
+          name: { type: "string" },
         },
         required: ["action", "name"],
       },
@@ -247,12 +233,12 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_goal",
-      description: "Batalkan atau tandai tercapai goal yang sudah dicatat.",
+      description: "Batalkan atau tandai tercapai goal.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["cancel", "done"] },
-          name: { type: "string", description: "Nama goal yang dimaksud" },
+          name: { type: "string" },
         },
         required: ["action", "name"],
       },

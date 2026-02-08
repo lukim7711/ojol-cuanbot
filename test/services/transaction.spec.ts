@@ -29,6 +29,9 @@ const mockUser: User = {
 
 const mockDB = {} as D1Database;
 
+// insertTransaction arg indexes:
+// [0]=db, [1]=userId, [2]=type, [3]=categoryId, [4]=amount, [5]=description, [6]=sourceText, [7]=trxDate
+
 describe("recordTransactions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -110,7 +113,7 @@ describe("recordTransactions", () => {
       "test"
     );
 
-    // 8th arg to insertTransaction is trxDate
+    // [7] = trxDate
     expect(mockInsertTransaction.mock.calls[0][7]).toBe("2026-02-08");
   });
 
@@ -126,6 +129,7 @@ describe("recordTransactions", () => {
       "test"
     );
 
+    // [7] = trxDate
     expect(mockInsertTransaction.mock.calls[0][7]).toBe("2026-02-07");
   });
 
@@ -141,6 +145,7 @@ describe("recordTransactions", () => {
       "test"
     );
 
+    // [7] = trxDate
     expect(mockInsertTransaction.mock.calls[0][7]).toBe("2026-02-08");
   });
 
@@ -159,7 +164,7 @@ describe("recordTransactions", () => {
       "bensin 30rb"
     );
 
-    // 4th arg to insertTransaction is categoryId
+    // [3] = categoryId
     expect(mockInsertTransaction.mock.calls[0][3]).toBe(5);
     expect(mockFindCategoryByName).toHaveBeenCalledWith(mockDB, "expense", "bensin");
   });
@@ -178,6 +183,7 @@ describe("recordTransactions", () => {
       "beli random 10rb"
     );
 
+    // [3] = categoryId
     expect(mockInsertTransaction.mock.calls[0][3]).toBeNull();
   });
 
@@ -282,8 +288,8 @@ describe("recordTransactions", () => {
       "original user message"
     );
 
-    // 6th arg to insertTransaction is sourceText
-    expect(mockInsertTransaction.mock.calls[0][5]).toBe("original user message");
+    // [6] = sourceText
+    expect(mockInsertTransaction.mock.calls[0][6]).toBe("original user message");
   });
 
   // ── Description sanitization ──
@@ -299,8 +305,8 @@ describe("recordTransactions", () => {
       "test"
     );
 
-    // 5th arg to insertTransaction is sanitized description
-    const insertedDesc = mockInsertTransaction.mock.calls[0][4];
+    // [5] = sanitized description
+    const insertedDesc = mockInsertTransaction.mock.calls[0][5];
     expect(insertedDesc).not.toContain("<script>");
   });
 });

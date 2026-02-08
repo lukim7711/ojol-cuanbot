@@ -39,7 +39,6 @@ function buildToolContext(toolCalls: Array<{ name: string; arguments: any }>): s
   if (toolCalls.length === 0) return "";
 
   const parts = toolCalls.map((tc) => {
-    // Include key info only — not full args dump
     const argSummary = Object.entries(tc.arguments)
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
       .join(", ");
@@ -77,8 +76,10 @@ export async function handleMessage(
     // 1. Get or create user
     const user = await getOrCreateUser(env.DB, telegramId, displayName);
 
-    // 2. Get recent conversation (6 messages) for context
-    const history = await getRecentConversation(env.DB, user.id, 6);
+    // 2. Get recent conversation (3 messages) for context
+    //    3 turns is sufficient — edits reference 1-2 messages back max.
+    //    Reduced from 6 to save ~200 tokens per request.
+    const history = await getRecentConversation(env.DB, user.id, 3);
     const conversationHistory = history.map((h: any) => ({
       role: h.role as "user" | "assistant",
       content: h.content,
@@ -106,7 +107,6 @@ export async function handleMessage(
       await ctx.reply(reply, { parse_mode: "HTML" });
 
       // 8. Save bot reply WITH tool context
-      // This helps AI understand previous actions for edit/delete commands
       const toolContext = buildToolContext(aiResult.toolCalls);
       await saveConversation(env.DB, user.id, "assistant", `${toolContext}${reply}`);
     } else {

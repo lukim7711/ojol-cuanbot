@@ -3,8 +3,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "record_transactions",
-      description:
-        "Catat satu atau lebih transaksi keuangan (pemasukan dan/atau pengeluaran) dari pesan user.",
+      description: "Catat transaksi pemasukan/pengeluaran.",
       parameters: {
         type: "object",
         properties: {
@@ -15,10 +14,10 @@ export const TOOLS = [
               type: "object",
               properties: {
                 type: { type: "string", enum: ["income", "expense"] },
-                amount: { type: "integer", description: "Jumlah dalam Rupiah (angka eksplisit, bukan slang)" },
+                amount: { type: "integer" },
                 category: { type: "string" },
                 description: { type: "string" },
-                date_offset: { type: "integer", description: "0=hari ini, -1=kemarin" },
+                date_offset: { type: "integer" },
               },
               required: ["type", "amount", "category", "description"],
             },
@@ -32,24 +31,23 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "record_debt",
-      description:
-        "Catat hutang/piutang baru ATAU hutang lama yang baru diinput. Mendukung jatuh tempo, bunga, tenor, dan cicilan.",
+      description: "Catat hutang/piutang baru.",
       parameters: {
         type: "object",
         properties: {
           type: { type: "string", enum: ["hutang", "piutang"] },
-          person_name: { type: "string", description: "Nama orang/lembaga" },
-          amount: { type: "integer", description: "Jumlah pokok dalam Rupiah" },
-          remaining: { type: "integer", description: "Sisa hutang saat ini (untuk hutang lama yang sudah pernah dicicil). Jika baru, kosongkan." },
-          note: { type: "string", description: "Catatan opsional" },
-          due_date: { type: "string", description: "Tanggal jatuh tempo format YYYY-MM-DD. Gunakan ini jika user sebut tanggal spesifik." },
-          due_date_days: { type: "integer", description: "Jatuh tempo dalam X hari dari sekarang. Gunakan ini jika user bilang 'jatuh tempo 2 minggu'." },
-          recurring_day: { type: "integer", description: "Tanggal berulang tiap bulan (1-28). Gunakan ini jika user bilang 'tiap tanggal 15'." },
-          interest_rate: { type: "number", description: "Suku bunga dalam desimal. 2% = 0.02" },
-          interest_type: { type: "string", enum: ["none", "flat", "daily"], description: "Tipe bunga: none (tanpa bunga), flat (bunga tetap per bulan), daily (bunga harian)" },
-          tenor_months: { type: "integer", description: "Lama pinjaman dalam bulan" },
-          installment_amount: { type: "integer", description: "Jumlah cicilan per periode dalam Rupiah" },
-          installment_freq: { type: "string", enum: ["daily", "weekly", "monthly"], description: "Frekuensi cicilan" },
+          person_name: { type: "string" },
+          amount: { type: "integer" },
+          remaining: { type: "integer" },
+          note: { type: "string" },
+          due_date: { type: "string" },
+          due_date_days: { type: "integer" },
+          recurring_day: { type: "integer" },
+          interest_rate: { type: "number" },
+          interest_type: { type: "string", enum: ["none", "flat", "daily"] },
+          tenor_months: { type: "integer" },
+          installment_amount: { type: "integer" },
+          installment_freq: { type: "string", enum: ["daily", "weekly", "monthly"] },
         },
         required: ["type", "person_name", "amount"],
       },
@@ -59,12 +57,12 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "pay_debt",
-      description: "Catat pembayaran/cicilan hutang atau penerimaan pembayaran piutang.",
+      description: "Catat pembayaran hutang/piutang.",
       parameters: {
         type: "object",
         properties: {
           person_name: { type: "string" },
-          amount: { type: "integer", description: "Jumlah yang dibayar dalam Rupiah" },
+          amount: { type: "integer" },
         },
         required: ["person_name", "amount"],
       },
@@ -74,7 +72,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_summary",
-      description: "Tampilkan ringkasan/rekap keuangan user.",
+      description: "Tampilkan rekap keuangan.",
       parameters: {
         type: "object",
         properties: {
@@ -90,7 +88,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_debts",
-      description: "Lihat daftar hutang dan/atau piutang yang masih aktif, termasuk status jatuh tempo.",
+      description: "Lihat daftar hutang/piutang aktif.",
       parameters: {
         type: "object",
         properties: {
@@ -104,11 +102,11 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_debt_history",
-      description: "Lihat riwayat pembayaran hutang tertentu.",
+      description: "Lihat riwayat pembayaran hutang.",
       parameters: {
         type: "object",
         properties: {
-          person_name: { type: "string", description: "Nama orang/lembaga" },
+          person_name: { type: "string" },
         },
         required: ["person_name"],
       },
@@ -118,7 +116,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_transaction",
-      description: "Koreksi atau hapus transaksi yang sudah dicatat.",
+      description: "Edit atau hapus transaksi.",
       parameters: {
         type: "object",
         properties: {
@@ -134,7 +132,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "ask_clarification",
-      description: "Gunakan HANYA jika pesan user ambigu atau data kurang lengkap.",
+      description: "Tanya balik jika pesan ambigu.",
       parameters: {
         type: "object",
         properties: {
@@ -148,7 +146,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_debt",
-      description: "Koreksi atau hapus data hutang/piutang yang sudah dicatat.",
+      description: "Edit atau hapus hutang/piutang.",
       parameters: {
         type: "object",
         properties: {
@@ -164,7 +162,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_daily_target",
-      description: "Tampilkan target harian otomatis berdasarkan kewajiban, hutang, operasional, tabungan, dan goals.",
+      description: "Tampilkan target harian.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -172,7 +170,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_obligation",
-      description: "Catat kewajiban tetap/rutin (cicilan, kontrakan, iuran, dll).",
+      description: "Catat kewajiban rutin (cicilan, kontrakan, dll).",
       parameters: {
         type: "object",
         properties: {
@@ -189,7 +187,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_goal",
-      description: "Set goal/target menabung untuk beli sesuatu.",
+      description: "Set goal menabung untuk beli sesuatu.",
       parameters: {
         type: "object",
         properties: {
@@ -205,7 +203,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_saving",
-      description: "Set jumlah tabungan minimum harian.",
+      description: "Set tabungan minimum harian.",
       parameters: {
         type: "object",
         properties: {
@@ -219,7 +217,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_obligation",
-      description: "Hapus atau tandai selesai kewajiban tetap.",
+      description: "Hapus atau selesaikan kewajiban.",
       parameters: {
         type: "object",
         properties: {
@@ -234,7 +232,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_goal",
-      description: "Batalkan atau tandai tercapai goal.",
+      description: "Batalkan atau selesaikan goal.",
       parameters: {
         type: "object",
         properties: {

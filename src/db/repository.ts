@@ -351,3 +351,60 @@ export async function updateDebtAmountAndRemaining(
     .bind(newAmount, newRemaining, debtId)
     .run();
 }
+
+// ── RESET: Wipe all user data ──
+
+export interface ResetCounts {
+  debt_payments: number;
+  debts: number;
+  transactions: number;
+  conversation_logs: number;
+  obligations: number;
+  goals: number;
+  user_settings: number;
+}
+
+export async function resetAllUserData(
+  db: D1Database,
+  userId: number
+): Promise<ResetCounts> {
+  // Order matters: delete children before parents (FK constraints)
+  // 1. debt_payments (FK → debts)
+  const debtIds = await db
+    .prepare("SELECT id FROM debts WHERE user_id = ?")
+    .bind(userId)
+    .all<{ id: number }>();
+
+  let debtPaymentsCount = 0;
+  if (debtIds.results.length > 0) {
+    const ids = debtIds.results.map((d) => d.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const result = await db
+      .prepare(`DELETE FROM debt_payments WHERE debt_id IN (${placeholders})`)
+      .bind(...ids)
+      .run();
+    debtPaymentsCount = result.meta?.changes ?? 0;
+  }
+
+  // 2-7. Direct deletes by user_id
+  const tables = [
+    "debts",
+    "transactions",
+    "conversation_logs",
+    "obligations",
+    "goals",
+    "user_settings",
+  ] as const;
+
+  const counts: Record<string, number> = { debt_payments: debtPaymentsCount };
+
+  for (const table of tables) {
+    const result = await db
+      .prepare(`DELETE FROM ${table} WHERE user_id = ?`)
+      .bind(userId)
+      .run();
+    counts[table] = result.meta?.changes ?? 0;
+  }
+
+  return counts as unknown as ResetCounts;
+}

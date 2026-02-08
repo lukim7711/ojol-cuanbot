@@ -1,5 +1,5 @@
 -- 7. OBLIGATIONS (kewajiban tetap: cicilan, kontrakan, dll)
-CREATE TABLE obligations (
+CREATE TABLE IF NOT EXISTS obligations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
@@ -11,10 +11,10 @@ CREATE TABLE obligations (
   created_at INTEGER DEFAULT (unixepoch()),
   updated_at INTEGER DEFAULT (unixepoch())
 );
-CREATE INDEX idx_obligations_user ON obligations(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_obligations_user ON obligations(user_id, status);
 
 -- 8. GOALS (keinginan/target tabungan untuk beli sesuatu)
-CREATE TABLE goals (
+CREATE TABLE IF NOT EXISTS goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
@@ -26,14 +26,14 @@ CREATE TABLE goals (
   created_at INTEGER DEFAULT (unixepoch()),
   updated_at INTEGER DEFAULT (unixepoch())
 );
-CREATE INDEX idx_goals_user ON goals(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id, status);
 
 -- 9. USER_SETTINGS (tabungan minimum harian, dll)
-CREATE TABLE user_settings (
+CREATE TABLE IF NOT EXISTS user_settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   setting_key TEXT NOT NULL,
   setting_value TEXT NOT NULL,
   updated_at INTEGER DEFAULT (unixepoch())
 );
-CREATE UNIQUE INDEX idx_settings_user_key ON user_settings(user_id, setting_key);
+CREATE INDEX IF NOT EXISTS idx_settings_user_key ON user_settings(user_id, setting_key);

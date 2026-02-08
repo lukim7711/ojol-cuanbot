@@ -44,6 +44,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Bootstrap migration tracking (one-time)
+        run: |
+          # Ensure d1_migrations table exists and seed already-applied migrations.
+          # D1 tracks applied migrations in this internal table.
+          # Our remote DB already has 0001-0003 applied manually, so we
+          # insert records so wrangler doesn't try to re-apply them.
+          # INSERT OR IGNORE makes this idempotent — safe to run every deploy.
+          npx wrangler d1 execute cuanbot-db --remote --command "
+            CREATE TABLE IF NOT EXISTS d1_migrations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT UNIQUE NOT NULL,
+              applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+            );
+            INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0001_init.sql');
+            INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0002_smart_target.sql');
+            INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0003_smart_debt.sql');
+          "
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Apply D1 migrations
         run: yes | npx wrangler d1 migrations apply cuanbot-db --remote
         env:

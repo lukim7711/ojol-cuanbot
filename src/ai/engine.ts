@@ -10,13 +10,17 @@ export interface AIResult {
   textResponse: string | null;
 }
 
-interface ConversationMessage {
+export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;
 }
 
+// Model constant — single place to change
+const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
 /**
- * Strip <think>...</think> tags yang ditambahkan Qwen3 thinking mode
+ * Strip <think>...</think> tags (safety — Llama doesn't use them,
+ * but kept for compatibility if model is swapped back)
  */
 function stripThinkingTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
@@ -52,7 +56,7 @@ function parseToolArguments(args: any): any {
 }
 
 /**
- * Get current date in WIB (UTC+7) — properly calculated
+ * Get current date in WIB (UTC+7)
  */
 function getWIBDateString(): string {
   const now = new Date();
@@ -65,142 +69,30 @@ function getWIBDateString(): string {
 }
 
 /**
- * Detect if AI response text looks like a financial confirmation
- * without having made any tool calls (hallucination).
- * Covers: transactions, debt recording, debt payments, edits, deletes.
+ * Detect truly casual messages that should NOT have tool calls.
+ * Intentionally NARROW — when in doubt, let the AI decide.
+ * This is NOT a regex financial detector — it only excludes greetings/thanks.
+ *
+ * Word limit: <=4 words. All genuine casual greetings are <=3 words.
+ * Anything longer likely contains financial context mixed in.
  */
-export function detectHallucinatedResponse(text: string | null): boolean {
-  if (!text) return false;
-
-  // ============================================
-  // EXCLUSION: Clarification questions are NOT hallucinations
-  // "Mau dicatat sebagai pemasukan atau pengeluaran?" → false
-  // ============================================
-  const questionPatterns = [
-    /\bmau\s+(di)?(catat|simpan|hapus|ubah|edit|bayar|batalkan)/i,
-    /\?\s*$/,
-  ];
-  if (questionPatterns.some((p) => p.test(text))) return false;
-
-  // Patterns that indicate AI "confirmed" a financial action without tool call
-  const confirmPatterns = [
-    /tercatat/i,
-    /dicatat/i,
-    /disimpan/i,
-    /sudah\s+(di)?catat/i,
-    /berhasil\s+(di)?catat/i,
-    /berhasil\s+(di)?simpan/i,
-    /berhasil\s+(di)?bayar/i,
-    /lunas/i,
-    /hutang.*lunas/i,
-    /sisa\s*(hutang)?\s*:?\s*rp/i,
-    /bayar.*hutang.*rp/i,
-    /pembayaran.*berhasil/i,
-    // Edit/delete/cancel hallucination patterns
-    /dihapus/i,
-    /diubah/i,
-    /dibatalkan/i,
-    /diedit/i,
-    /sudah\s+(di)?hapus/i,
-    /sudah\s+(di)?ubah/i,
-    /sudah\s+(di)?batalkan/i,
-    /berhasil\s+(di)?hapus/i,
-    /berhasil\s+(di)?ubah/i,
-    /berhasil\s+(di)?edit/i,
-    /berhasil\s+(di)?batalkan/i,
+export function isCasualChat(text: string): boolean {
+  const casualPatterns = [
+    /^(halo|hai|hey|hi|yo|woi)\b/i,
+    /^(pagi|siang|sore|malam|met\s)/i,
+    /^(makasih|thanks|thank|terima\s*kasih)/i,
+    /^(ok|oke|okey|sip|siap|mantap|good|nice)\b/i,
+    /^(bye|dadah|sampai\s*jumpa)/i,
+    /^(lagi\s+apa|apa\s+kabar|gimana)/i,
+    /^(lu\s+siapa|kamu\s+siapa|lo\s+bisa\s+apa)/i,
   ];
 
-  const hasConfirmation = confirmPatterns.some((p) => p.test(text));
-  if (!hasConfirmation) return false;
+  const lower = text.toLowerCase().trim();
 
-  // Also check if it contains financial indicators
-  const financialPatterns = [
-    /rp\.?\s*[\d.,]+/i,
-    /\d+\.?\d*\s*(rb|ribu|k|jt|juta)/i,
-    /pemasukan/i,
-    /pengeluaran/i,
-    /income/i,
-    /expense/i,
-    /hutang/i,
-    /piutang/i,
-    /sisa/i,
-    // Edit/delete context indicators — even without Rp amount
-    /transaksi/i,
-    /kewajiban/i,
-    /goal/i,
-    /cicilan/i,
-  ];
+  // Only match short messages (<=4 words) that are clearly casual
+  if (lower.split(/\s+/).length > 4) return false;
 
-  return financialPatterns.some((p) => p.test(text));
-}
-
-/**
- * Check if user text likely contains financial data that should trigger tool calls.
- * Must have a number + financial context keyword.
- */
-export function looksLikeFinancialInput(text: string): boolean {
-  const lower = text.toLowerCase();
-
-  // Must contain a number or slang number
-  const hasNumber =
-    /\d/.test(text) ||
-    /ceban|goceng|gocap|seceng|sejuta|setengah\s*juta/i.test(text);
-  if (!hasNumber) return false;
-
-  // Must contain financial context keyword
-  const financialKeywords = [
-    /dapet/i, /dapat/i, /orderan/i, /bonus/i, /tip/i,
-    /makan/i, /bensin/i, /rokok/i, /parkir/i, /pulsa/i,
-    /servis/i, /bayar/i, /beli/i, /isi/i, /jajan/i,
-    /ngopi/i, /minum/i, /service/i, /ongkos/i,
-    /rb\b/i, /ribu/i, /\bk\b/i, /jt/i, /juta/i,
-    /minjem/i, /pinjam/i, /hutang/i, /piutang/i,
-    /cicilan/i, /kontrakan/i, /nabung/i,
-    /salah/i, /harusnya/i, /ubah/i, /ganti/i, /edit/i,
-    /hapus/i, /delete/i, /batal/i,
-    /minus/i, /rugi/i, /untung/i,
-  ];
-
-  return financialKeywords.some((p) => p.test(text));
-}
-
-/**
- * Check if user text is a query/command that should trigger tool calls
- * but does NOT contain numbers (e.g. "daftar piutang", "riwayat hutang Budi").
- */
-export function looksLikeActionQuery(text: string): boolean {
-  const actionPatterns = [
-    // Debt queries
-    /daftar\s+(hutang|piutang|semua)/i,
-    /list\s+(hutang|piutang)/i,
-    /cek\s+(hutang|piutang)/i,
-    /lihat\s+(hutang|piutang)/i,
-    /riwayat\s+(pembayaran\s+)?(hutang|piutang)/i,
-    /\/(hutang|piutang)/i,
-    // Target queries
-    /target\s+(hari\s+ini|gue|saya|lo)/i,
-    /berapa\s+target/i,
-    // Rekap
-    /rekap/i,
-    /\/(rekap|summary)/i,
-    // Edit/delete without numbers
-    /hapus\s+(hutang|piutang|yang|transaksi|kewajiban|goal)/i,
-    /batal(kan)?\s+(goal|hutang|piutang|cicilan|kewajiban)/i,
-    /hapus\s+cicilan/i,
-    /done\s+cicilan/i,
-    /kewajiban.*selesai/i,
-    /selesai.*kewajiban/i,
-  ];
-
-  return actionPatterns.some((p) => p.test(text));
-}
-
-/**
- * Determine if user input should have triggered a tool call.
- * Combines financial input detection AND action query detection.
- */
-export function shouldHaveToolCall(text: string): boolean {
-  return looksLikeFinancialInput(text) || looksLikeActionQuery(text);
+  return casualPatterns.some((p) => p.test(lower));
 }
 
 /**
@@ -210,12 +102,9 @@ function parseAIResponse(response: any): AIResult {
   const toolCalls: AIResult["toolCalls"] = [];
   let textResponse: string | null = null;
 
-  // ============================================
-  // 1. Extract tool_calls dari berbagai format
-  // ============================================
   let rawToolCalls: any[] = [];
 
-  // Coba Format A dulu (OpenAI-compatible)
+  // Format A: OpenAI-compatible (choices[0].message.tool_calls)
   const choiceMessage = response.choices?.[0]?.message;
   if (choiceMessage?.tool_calls && Array.isArray(choiceMessage.tool_calls)) {
     rawToolCalls = choiceMessage.tool_calls;
@@ -223,7 +112,7 @@ function parseAIResponse(response: any): AIResult {
       `[AI] Found ${rawToolCalls.length} tool_calls via choices[0].message.tool_calls`
     );
   }
-  // Fallback Format B (legacy)
+  // Format B: Legacy Workers AI
   else if (response.tool_calls && Array.isArray(response.tool_calls)) {
     rawToolCalls = response.tool_calls;
     console.log(
@@ -231,7 +120,6 @@ function parseAIResponse(response: any): AIResult {
     );
   }
 
-  // Parse setiap tool call
   for (const tc of rawToolCalls) {
     const name = tc.function?.name ?? tc.name;
     const rawArgs = tc.function?.arguments ?? tc.arguments;
@@ -247,9 +135,6 @@ function parseAIResponse(response: any): AIResult {
     toolCalls.push({ name, arguments: parsedArgs });
   }
 
-  // ============================================
-  // 2. Extract text response
-  // ============================================
   let rawText =
     choiceMessage?.content ?? response.response ?? response.content ?? null;
 
@@ -274,11 +159,25 @@ export async function runAI(
     { role: "user" as const, content: userText },
   ];
 
-  console.log("[AI] Sending to Qwen3, user text:", userText);
+  console.log(`[AI] Sending to ${AI_MODEL}, user text:`, userText);
 
-  const response = (await env.AI.run("@cf/qwen/qwen3-30b-a3b-fp8" as any, {
+  // ============================================
+  // STEP 1: Determine tool_choice strategy
+  // ============================================
+  const casual = isCasualChat(userText);
+  const toolChoice = casual ? "auto" : "auto";
+  // Note: We use "auto" for both, but on retry we escalate to "required"
+  // This lets the AI naturally handle casual chat vs financial input
+
+  console.log(`[AI] Strategy: casual=${casual}, tool_choice=${toolChoice}`);
+
+  // ============================================
+  // STEP 2: First AI call
+  // ============================================
+  const response = (await env.AI.run(AI_MODEL as any, {
     messages,
     tools: TOOLS as any,
+    tool_choice: toolChoice,
   })) as any;
 
   console.log("[AI] Raw response keys:", Object.keys(response));
@@ -286,49 +185,29 @@ export async function runAI(
   let result = parseAIResponse(response);
 
   // ============================================
-  // LAYER 3: Detect hallucinated financial response
-  // AI generated confirmation text without tool calls
+  // STEP 3: Smart retry with tool_choice: "required"
+  // Only if: not casual + AI returned 0 tool calls
+  // No regex — purely based on AI's own behavior
   // ============================================
-  const isHallucination =
-    result.toolCalls.length === 0 &&
-    detectHallucinatedResponse(result.textResponse);
-
-  // ============================================
-  // LAYER 4: No tool calls but input SHOULD have triggered one
-  // Covers: financial input, debt queries, target queries, edit commands
-  // ============================================
-  const shouldRetry =
-    result.toolCalls.length === 0 &&
-    !isHallucination &&
-    shouldHaveToolCall(userText);
-
-  if (isHallucination || shouldRetry) {
-    const reason = isHallucination ? "HALLUCINATION" : "MISSING_TOOL_CALL";
+  if (result.toolCalls.length === 0 && !casual) {
     console.warn(
-      `[AI] ${reason} DETECTED for: "${userText}". Retrying...`
+      `[AI] 0 tool calls for non-casual input: "${userText}". Retrying with tool_choice=required...`
     );
-
-    // Build retry instruction based on type
-    const retryInstruction = isHallucination
-      ? `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, edit_transaction, edit_debt, edit_obligation, edit_goal, dll). DILARANG membalas dengan teks saja. Jika user minta hapus/ubah/batalkan, panggil tool edit yang sesuai.]`
-      : `[INSTRUKSI SISTEM: Pesan berikut MEMBUTUHKAN tool call. Analisis ulang dan panggil tool yang sesuai. Jika ada angka + konteks keuangan → record_transactions/record_debt/pay_debt. Jika query hutang/piutang → get_debts/get_debt_history. Jika query target → get_daily_target. Jika edit/hapus → edit_transaction/edit_debt. Jika kewajiban selesai/hapus → edit_obligation. Jika goal batal → edit_goal. DILARANG membalas dengan teks saja.]`;
 
     const retryMessages = [
       { role: "system" as const, content: buildSystemPrompt(currentDate) },
       ...conversationHistory,
       {
         role: "user" as const,
-        content: `${retryInstruction}\n\n${userText}`,
+        content: `[SYSTEM: Kamu WAJIB memanggil salah satu tool/function yang tersedia untuk memproses pesan ini. Analisis pesan berikut dan panggil tool yang paling sesuai.]\n\n${userText}`,
       },
     ];
 
-    const retryResponse = (await env.AI.run(
-      "@cf/qwen/qwen3-30b-a3b-fp8" as any,
-      {
-        messages: retryMessages,
-        tools: TOOLS as any,
-      }
-    )) as any;
+    const retryResponse = (await env.AI.run(AI_MODEL as any, {
+      messages: retryMessages,
+      tools: TOOLS as any,
+      tool_choice: "required",
+    })) as any;
 
     console.log("[AI] Retry response keys:", Object.keys(retryResponse));
 
@@ -340,19 +219,15 @@ export async function runAI(
       );
       result = retryResult;
     } else {
-      console.warn(`[AI] Retry also failed (${reason}). Using original response.`);
-      if (isHallucination) {
-        // Nullify the hallucinated text to prevent false confirmation
-        result.textResponse =
-          "⚠️ Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
-      }
-      // For shouldRetry (non-hallucination), keep original text response
-      // as it might be a legitimate clarification from AI
+      console.warn("[AI] Retry also returned 0 tool calls. Keeping original.");
+      // If AI truly can't figure out a tool, keep original text response
+      // This handles edge cases where user sends something ambiguous
     }
   }
 
   if (result.toolCalls.length === 0 && !result.textResponse) {
     console.warn("[AI] No tool_calls and no text response!");
+    result.textResponse = "Maaf bos, gue kurang paham. Coba ulangi ya.";
   }
 
   console.log(

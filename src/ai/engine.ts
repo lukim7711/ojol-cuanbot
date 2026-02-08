@@ -66,11 +66,11 @@ function getWIBDateString(): string {
 
 /**
  * Detect if AI response text looks like a financial confirmation
- * without having made any tool calls (hallucination)
+ * without having made any tool calls (hallucination).
+ * Covers: transactions, debt recording, debt payments.
  */
 export function detectHallucinatedResponse(text: string | null): boolean {
   if (!text) return false;
-  const lower = text.toLowerCase();
 
   // Patterns that indicate AI "confirmed" a financial action without tool call
   const confirmPatterns = [
@@ -80,6 +80,12 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /sudah\s+(di)?catat/i,
     /berhasil\s+(di)?catat/i,
     /berhasil\s+(di)?simpan/i,
+    /berhasil\s+(di)?bayar/i,
+    /lunas/i,
+    /hutang.*lunas/i,
+    /sisa\s*(hutang)?\s*:?\s*rp/i,
+    /bayar.*hutang.*rp/i,
+    /pembayaran.*berhasil/i,
   ];
 
   const hasConfirmation = confirmPatterns.some((p) => p.test(text));
@@ -93,6 +99,9 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /pengeluaran/i,
     /income/i,
     /expense/i,
+    /hutang/i,
+    /piutang/i,
+    /sisa/i,
   ];
 
   return financialPatterns.some((p) => p.test(text));
@@ -208,7 +217,7 @@ export async function runAI(
 
   // ============================================
   // GUARD: Detect hallucinated financial response
-  // If AI generated "Tercatat!" text without tool calls,
+  // If AI generated confirmation text without tool calls,
   // AND user text looks like financial input → RETRY once
   // ============================================
   const isHallucination =
@@ -218,7 +227,7 @@ export async function runAI(
 
   if (isHallucination) {
     console.warn(
-      "[AI] HALLUCINATION DETECTED: AI said 'Tercatat' without tool calls. Retrying..."
+      "[AI] HALLUCINATION DETECTED: AI confirmed action without tool calls. Retrying..."
     );
 
     // Retry with stronger instruction prepended to user message
@@ -227,7 +236,7 @@ export async function runAI(
       ...conversationHistory,
       {
         role: "user" as const,
-        content: `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool record_transactions atau tool lain yang sesuai. DILARANG membalas dengan teks saja.]\n\n${userText}`,
+        content: `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, dll). DILARANG membalas dengan teks saja.]\n\n${userText}`,
       },
     ];
 
@@ -250,9 +259,9 @@ export async function runAI(
       result = retryResult;
     } else {
       console.warn("[AI] Retry also failed. Using original response.");
-      // Nullify the hallucinated text to prevent false "Tercatat!" message
+      // Nullify the hallucinated text to prevent false confirmation
       result.textResponse =
-        "⚠️ Maaf, gue gagal nyimpen data lo. Coba kirim ulang ya bos.";
+        "⚠️ Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
     }
   }
 

@@ -56,6 +56,47 @@ describe("detectHallucinatedResponse", () => {
       )
     ).toBe(true);
   });
+
+  // Debt-specific hallucination patterns
+  it("detects 'Lunas' with hutang context", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Hutang ke Budi lunas! Sisa: Rp0"
+      )
+    ).toBe(true);
+  });
+
+  it("detects 'Berhasil dibayar' with Rp", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Berhasil dibayar Rp300.000 ke Budi"
+      )
+    ).toBe(true);
+  });
+
+  it("detects 'Sisa hutang' with Rp", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Sisa hutang: Rp300.000"
+      )
+    ).toBe(true);
+  });
+
+  it("detects 'Pembayaran berhasil' with hutang", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Pembayaran berhasil! Sisa hutang Rp0"
+      )
+    ).toBe(true);
+  });
+
+  it("detects 'bayar hutang' response with Rp", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Bayar hutang ke Budi Rp200.000. Sisa: Rp300.000"
+      )
+    ).toBe(true);
+  });
 });
 
 describe("looksLikeFinancialInput", () => {
@@ -97,6 +138,15 @@ describe("looksLikeFinancialInput", () => {
 
   it("detects cicilan: 'cicilan 50rb'", () => {
     expect(looksLikeFinancialInput("cicilan gopay 50rb per hari")).toBe(true);
+  });
+
+  // Debt payment patterns
+  it("detects 'bayar hutang 200rb'", () => {
+    expect(looksLikeFinancialInput("bayar hutang ke Budi 200rb")).toBe(true);
+  });
+
+  it("detects 'bayar hutang 300rb'", () => {
+    expect(looksLikeFinancialInput("bayar hutang ke Budi 300rb")).toBe(true);
   });
 
   it("returns false for just numbers without context", () => {

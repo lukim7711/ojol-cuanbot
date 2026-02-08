@@ -108,7 +108,8 @@ export function detectHallucinatedResponse(text: string | null): boolean {
 }
 
 /**
- * Check if user text likely contains financial data that should trigger tool calls
+ * Check if user text likely contains financial data that should trigger tool calls.
+ * Must have a number + financial context keyword.
  */
 export function looksLikeFinancialInput(text: string): boolean {
   const lower = text.toLowerCase();
@@ -128,9 +129,50 @@ export function looksLikeFinancialInput(text: string): boolean {
     /rb\b/i, /ribu/i, /\bk\b/i, /jt/i, /juta/i,
     /minjem/i, /pinjam/i, /hutang/i, /piutang/i,
     /cicilan/i, /kontrakan/i, /nabung/i,
+    /salah/i, /harusnya/i, /ubah/i, /ganti/i, /edit/i,
+    /hapus/i, /delete/i, /batal/i,
   ];
 
   return financialKeywords.some((p) => p.test(text));
+}
+
+/**
+ * Check if user text is a query/command that should trigger tool calls
+ * but does NOT contain numbers (e.g. "daftar piutang", "riwayat hutang Budi").
+ */
+export function looksLikeActionQuery(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  const actionPatterns = [
+    // Debt queries
+    /daftar\s+(hutang|piutang|semua)/i,
+    /list\s+(hutang|piutang)/i,
+    /cek\s+(hutang|piutang)/i,
+    /lihat\s+(hutang|piutang)/i,
+    /riwayat\s+(pembayaran\s+)?(hutang|piutang)/i,
+    /\/(hutang|piutang)/i,
+    // Target queries
+    /target\s+(hari\s+ini|gue|saya|lo)/i,
+    /berapa\s+target/i,
+    // Rekap
+    /rekap/i,
+    /\/(rekap|summary)/i,
+    // Edit/delete without numbers
+    /hapus\s+(hutang|piutang|yang)/i,
+    /batal\s+(goal|hutang|piutang|cicilan)/i,
+    /hapus\s+cicilan/i,
+    /done\s+cicilan/i,
+  ];
+
+  return actionPatterns.some((p) => p.test(text));
+}
+
+/**
+ * Determine if user input should have triggered a tool call.
+ * Combines financial input detection AND action query detection.
+ */
+export function shouldHaveToolCall(text: string): boolean {
+  return looksLikeFinancialInput(text) || looksLikeActionQuery(text);
 }
 
 /**
@@ -216,27 +258,39 @@ export async function runAI(
   let result = parseAIResponse(response);
 
   // ============================================
-  // GUARD: Detect hallucinated financial response
-  // If AI generated confirmation text without tool calls,
-  // AND user text looks like financial input → RETRY once
+  // LAYER 3: Detect hallucinated financial response
+  // AI generated confirmation text without tool calls
   // ============================================
   const isHallucination =
     result.toolCalls.length === 0 &&
-    detectHallucinatedResponse(result.textResponse) &&
-    looksLikeFinancialInput(userText);
+    detectHallucinatedResponse(result.textResponse);
 
-  if (isHallucination) {
+  // ============================================
+  // LAYER 4: No tool calls but input SHOULD have triggered one
+  // Covers: financial input, debt queries, target queries, edit commands
+  // ============================================
+  const shouldRetry =
+    result.toolCalls.length === 0 &&
+    !isHallucination &&
+    shouldHaveToolCall(userText);
+
+  if (isHallucination || shouldRetry) {
+    const reason = isHallucination ? "HALLUCINATION" : "MISSING_TOOL_CALL";
     console.warn(
-      "[AI] HALLUCINATION DETECTED: AI confirmed action without tool calls. Retrying..."
+      `[AI] ${reason} DETECTED for: "${userText}". Retrying...`
     );
 
-    // Retry with stronger instruction prepended to user message
+    // Build retry instruction based on type
+    const retryInstruction = isHallucination
+      ? `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, dll). DILARANG membalas dengan teks saja.]`
+      : `[INSTRUKSI SISTEM: Pesan berikut MEMBUTUHKAN tool call. Analisis ulang dan panggil tool yang sesuai. Jika ada angka + konteks keuangan \u2192 record_transactions/record_debt/pay_debt. Jika query hutang/piutang \u2192 get_debts/get_debt_history. Jika query target \u2192 get_daily_target. Jika edit/hapus \u2192 edit_transaction/edit_debt. DILARANG membalas dengan teks saja.]`;
+
     const retryMessages = [
       { role: "system" as const, content: buildSystemPrompt(currentDate) },
       ...conversationHistory,
       {
         role: "user" as const,
-        content: `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, dll). DILARANG membalas dengan teks saja.]\n\n${userText}`,
+        content: `${retryInstruction}\n\n${userText}`,
       },
     ];
 
@@ -258,25 +312,15 @@ export async function runAI(
       );
       result = retryResult;
     } else {
-      console.warn("[AI] Retry also failed. Using original response.");
-      // Nullify the hallucinated text to prevent false confirmation
-      result.textResponse =
-        "⚠️ Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
+      console.warn(`[AI] Retry also failed (${reason}). Using original response.`);
+      if (isHallucination) {
+        // Nullify the hallucinated text to prevent false confirmation
+        result.textResponse =
+          "\u26a0\ufe0f Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
+      }
+      // For shouldRetry (non-hallucination), keep original text response
+      // as it might be a legitimate clarification from AI
     }
-  }
-
-  // Additional guard: if no tool calls AND text looks like financial input
-  // but AI just gave casual text (not hallucination), still warn
-  if (
-    result.toolCalls.length === 0 &&
-    !isHallucination &&
-    looksLikeFinancialInput(userText) &&
-    !result.textResponse?.includes("⚠️")
-  ) {
-    console.warn(
-      "[AI] No tool calls for likely financial input:",
-      userText
-    );
   }
 
   if (result.toolCalls.length === 0 && !result.textResponse) {

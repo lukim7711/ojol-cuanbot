@@ -72,6 +72,9 @@ function getWIBDateString(): string {
  * Detect truly casual messages that should NOT have tool calls.
  * Intentionally NARROW — when in doubt, let the AI decide.
  * This is NOT a regex financial detector — it only excludes greetings/thanks.
+ *
+ * Word limit: <=4 words. All genuine casual greetings are <=3 words.
+ * Anything longer likely contains financial context mixed in.
  */
 export function isCasualChat(text: string): boolean {
   const casualPatterns = [
@@ -86,8 +89,8 @@ export function isCasualChat(text: string): boolean {
 
   const lower = text.toLowerCase().trim();
 
-  // Only match short messages (<=6 words) that are clearly casual
-  if (lower.split(/\s+/).length > 6) return false;
+  // Only match short messages (<=4 words) that are clearly casual
+  if (lower.split(/\s+/).length > 4) return false;
 
   return casualPatterns.some((p) => p.test(lower));
 }

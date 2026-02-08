@@ -10,11 +10,12 @@ export const TOOLS = [
         properties: {
           transactions: {
             type: "array",
+            maxItems: 10,
             items: {
               type: "object",
               properties: {
                 type: { type: "string", enum: ["income", "expense"] },
-                amount: { type: "integer", description: "Jumlah dalam Rupiah" },
+                amount: { type: "integer", description: "Jumlah dalam Rupiah (angka eksplisit, bukan slang)" },
                 category: { type: "string" },
                 description: { type: "string" },
                 date_offset: { type: "integer", description: "0=hari ini, -1=kemarin" },
@@ -63,7 +64,7 @@ export const TOOLS = [
         type: "object",
         properties: {
           person_name: { type: "string" },
-          amount: { type: "integer", description: "Jumlah yang dibayar" },
+          amount: { type: "integer", description: "Jumlah yang dibayar dalam Rupiah" },
         },
         required: ["person_name", "amount"],
       },

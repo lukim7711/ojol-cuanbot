@@ -1,6 +1,6 @@
 import { Env } from "../config/env";
 import { TOOLS } from "./tools";
-import { buildSystemPrompt } from "./prompt";
+import { buildNLUPrompt, buildExecutorPrompt } from "./prompt";
 
 export interface AIResult {
   toolCalls: Array<{
@@ -15,12 +15,12 @@ export interface ConversationMessage {
   content: string;
 }
 
-// Model constant — single place to change
-const AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+// Dual model constants
+const QWEN_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"; // NLU: understands Indonesian slang
+const LLAMA_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"; // FC: reliable function calling
 
 /**
- * Strip <think>...</think> tags (safety — Llama doesn't use them,
- * but kept for compatibility if model is swapped back)
+ * Strip <think>...</think> tags from Qwen's thinking mode
  */
 function stripThinkingTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
@@ -69,12 +69,8 @@ function getWIBDateString(): string {
 }
 
 /**
- * Detect truly casual messages that should NOT have tool calls.
- * Intentionally NARROW — when in doubt, let the AI decide.
- * This is NOT a regex financial detector — it only excludes greetings/thanks.
- *
- * Word limit: <=4 words. All genuine casual greetings are <=3 words.
- * Anything longer likely contains financial context mixed in.
+ * Detect truly casual messages that should NOT enter the pipeline.
+ * Intentionally NARROW — <=4 words + greeting pattern only.
  */
 export function isCasualChat(text: string): boolean {
   const casualPatterns = [
@@ -88,8 +84,6 @@ export function isCasualChat(text: string): boolean {
   ];
 
   const lower = text.toLowerCase().trim();
-
-  // Only match short messages (<=4 words) that are clearly casual
   if (lower.split(/\s+/).length > 4) return false;
 
   return casualPatterns.some((p) => p.test(lower));
@@ -145,93 +139,269 @@ function parseAIResponse(response: any): AIResult {
   return { toolCalls, textResponse };
 }
 
+/**
+ * Validate and sanitize tool calls — defense against runaway arrays
+ */
+export function validateToolCalls(result: AIResult): AIResult {
+  const MAX_TRANSACTIONS = 10;
+  const MIN_AMOUNT = 1;
+  const MAX_AMOUNT = 100_000_000; // 100 juta
+
+  for (const tc of result.toolCalls) {
+    // Guard: limit transactions array size
+    if (tc.name === "record_transactions" && tc.arguments.transactions) {
+      const txns = tc.arguments.transactions;
+      if (Array.isArray(txns) && txns.length > MAX_TRANSACTIONS) {
+        console.warn(
+          `[Validate] Runaway array detected: ${txns.length} items. Truncating to ${MAX_TRANSACTIONS}.`
+        );
+        tc.arguments.transactions = txns.slice(0, MAX_TRANSACTIONS);
+      }
+
+      // Validate each transaction amount
+      tc.arguments.transactions = tc.arguments.transactions.filter(
+        (t: any) => {
+          const amount = Number(t.amount);
+          if (isNaN(amount) || amount < MIN_AMOUNT || amount > MAX_AMOUNT) {
+            console.warn(
+              `[Validate] Invalid amount ${t.amount} for "${t.description}". Skipping.`
+            );
+            return false;
+          }
+          return true;
+        }
+      );
+    }
+
+    // Guard: validate debt/payment amounts
+    if (
+      ["record_debt", "pay_debt", "edit_debt"].includes(tc.name) &&
+      tc.arguments.amount
+    ) {
+      const amount = Number(tc.arguments.amount);
+      if (isNaN(amount) || amount < MIN_AMOUNT || amount > MAX_AMOUNT) {
+        console.warn(
+          `[Validate] Invalid debt amount: ${tc.arguments.amount}. Clamping.`
+        );
+        tc.arguments.amount = Math.max(
+          MIN_AMOUNT,
+          Math.min(MAX_AMOUNT, amount || 0)
+        );
+      }
+    }
+  }
+
+  // Deduplicate: if same tool called multiple times, keep only first
+  const seen = new Set<string>();
+  result.toolCalls = result.toolCalls.filter((tc) => {
+    const key = tc.name;
+    if (seen.has(key)) {
+      console.warn(`[Validate] Duplicate tool call: ${key}. Removing.`);
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  return result;
+}
+
+// ============================================================
+// STAGE 1: Qwen NLU — normalize slang to formal Indonesian
+// ============================================================
+async function normalizeWithQwen(
+  env: Env,
+  userText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<string> {
+  const currentDate = getWIBDateString();
+
+  const messages = [
+    { role: "system" as const, content: buildNLUPrompt(currentDate) },
+    ...conversationHistory,
+    { role: "user" as const, content: userText },
+  ];
+
+  console.log(`[NLU] Sending to Qwen: "${userText}"`);
+
+  const response = (await env.AI.run(QWEN_MODEL as any, {
+    messages,
+    // NO tools — pure text generation for normalization
+  })) as any;
+
+  let normalized =
+    response.choices?.[0]?.message?.content ??
+    response.response ??
+    response.content ??
+    userText;
+
+  if (typeof normalized === "string") {
+    normalized = stripThinkingTags(normalized);
+  }
+
+  // Fallback: if Qwen returns empty/garbage, use original
+  if (!normalized || normalized.length < 2) {
+    console.warn("[NLU] Empty response from Qwen. Using original text.");
+    normalized = userText;
+  }
+
+  console.log(`[NLU] Normalized: "${userText}" → "${normalized}"`);
+  return normalized;
+}
+
+// ============================================================
+// STAGE 2: Llama Executor — reliable function calling
+// ============================================================
+async function executeWithLlama(
+  env: Env,
+  normalizedText: string,
+  originalText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<AIResult> {
+  const currentDate = getWIBDateString();
+
+  const messages = [
+    { role: "system" as const, content: buildExecutorPrompt(currentDate) },
+    ...conversationHistory,
+    {
+      role: "user" as const,
+      content: `[Pesan asli: "${originalText}"]\n\n${normalizedText}`,
+    },
+  ];
+
+  console.log(`[FC] Sending to Llama: "${normalizedText}"`);
+
+  // First attempt with tool_choice: "auto"
+  const response = (await env.AI.run(LLAMA_MODEL as any, {
+    messages,
+    tools: TOOLS as any,
+    tool_choice: "auto",
+  })) as any;
+
+  console.log("[FC] Response keys:", Object.keys(response));
+
+  let result = parseAIResponse(response);
+
+  // Retry with "required" if 0 tool calls on non-casual input
+  if (result.toolCalls.length === 0) {
+    console.warn(
+      `[FC] 0 tool calls. Retrying with tool_choice=required...`
+    );
+
+    const retryMessages = [
+      { role: "system" as const, content: buildExecutorPrompt(currentDate) },
+      ...conversationHistory,
+      {
+        role: "user" as const,
+        content: `[INSTRUKSI: Kamu WAJIB memanggil tool. Pesan asli: "${originalText}"]\n\n${normalizedText}`,
+      },
+    ];
+
+    const retryResponse = (await env.AI.run(LLAMA_MODEL as any, {
+      messages: retryMessages,
+      tools: TOOLS as any,
+      tool_choice: "required",
+    })) as any;
+
+    const retryResult = parseAIResponse(retryResponse);
+    if (retryResult.toolCalls.length > 0) {
+      console.log(
+        `[FC] Retry successful: ${retryResult.toolCalls.length} tool calls`
+      );
+      result = retryResult;
+    } else {
+      console.warn("[FC] Retry also returned 0 tool calls.");
+    }
+  }
+
+  return result;
+}
+
+// ============================================================
+// Casual chat handler — single Qwen call, no pipeline
+// ============================================================
+async function handleCasualChat(
+  env: Env,
+  userText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<AIResult> {
+  const messages = [
+    {
+      role: "system" as const,
+      content:
+        "Kamu CuanBot, asisten keuangan driver ojol. Bahasa santai/gaul Jakarta. Panggil user \"bos\". Balas singkat dan friendly.",
+    },
+    ...conversationHistory,
+    { role: "user" as const, content: userText },
+  ];
+
+  const response = (await env.AI.run(QWEN_MODEL as any, {
+    messages,
+  })) as any;
+
+  let text =
+    response.choices?.[0]?.message?.content ??
+    response.response ??
+    response.content ??
+    "Halo bos! Ada yang bisa gue bantu? 😎";
+
+  if (typeof text === "string") {
+    text = stripThinkingTags(text);
+  }
+
+  return { toolCalls: [], textResponse: text || "Halo bos! 😎" };
+}
+
+// ============================================================
+// MAIN ENTRY POINT — Dual Model Pipeline
+// ============================================================
 export async function runAI(
   env: Env,
   userId: number,
   userText: string,
   conversationHistory: ConversationMessage[] = []
 ): Promise<AIResult> {
-  const currentDate = getWIBDateString();
-
-  const messages = [
-    { role: "system" as const, content: buildSystemPrompt(currentDate) },
-    ...conversationHistory,
-    { role: "user" as const, content: userText },
-  ];
-
-  console.log(`[AI] Sending to ${AI_MODEL}, user text:`, userText);
+  console.log(`[AI] Pipeline start for: "${userText}"`);
 
   // ============================================
-  // STEP 1: Determine tool_choice strategy
+  // FAST PATH: Casual chat → single Qwen call
   // ============================================
-  const casual = isCasualChat(userText);
-  const toolChoice = casual ? "auto" : "auto";
-  // Note: We use "auto" for both, but on retry we escalate to "required"
-  // This lets the AI naturally handle casual chat vs financial input
-
-  console.log(`[AI] Strategy: casual=${casual}, tool_choice=${toolChoice}`);
-
-  // ============================================
-  // STEP 2: First AI call
-  // ============================================
-  const response = (await env.AI.run(AI_MODEL as any, {
-    messages,
-    tools: TOOLS as any,
-    tool_choice: toolChoice,
-  })) as any;
-
-  console.log("[AI] Raw response keys:", Object.keys(response));
-
-  let result = parseAIResponse(response);
-
-  // ============================================
-  // STEP 3: Smart retry with tool_choice: "required"
-  // Only if: not casual + AI returned 0 tool calls
-  // No regex — purely based on AI's own behavior
-  // ============================================
-  if (result.toolCalls.length === 0 && !casual) {
-    console.warn(
-      `[AI] 0 tool calls for non-casual input: "${userText}". Retrying with tool_choice=required...`
-    );
-
-    const retryMessages = [
-      { role: "system" as const, content: buildSystemPrompt(currentDate) },
-      ...conversationHistory,
-      {
-        role: "user" as const,
-        content: `[SYSTEM: Kamu WAJIB memanggil salah satu tool/function yang tersedia untuk memproses pesan ini. Analisis pesan berikut dan panggil tool yang paling sesuai.]\n\n${userText}`,
-      },
-    ];
-
-    const retryResponse = (await env.AI.run(AI_MODEL as any, {
-      messages: retryMessages,
-      tools: TOOLS as any,
-      tool_choice: "required",
-    })) as any;
-
-    console.log("[AI] Retry response keys:", Object.keys(retryResponse));
-
-    const retryResult = parseAIResponse(retryResponse);
-
-    if (retryResult.toolCalls.length > 0) {
-      console.log(
-        `[AI] Retry successful: got ${retryResult.toolCalls.length} tool calls`
-      );
-      result = retryResult;
-    } else {
-      console.warn("[AI] Retry also returned 0 tool calls. Keeping original.");
-      // If AI truly can't figure out a tool, keep original text response
-      // This handles edge cases where user sends something ambiguous
-    }
+  if (isCasualChat(userText)) {
+    console.log("[AI] Casual chat detected. Single Qwen call.");
+    return await handleCasualChat(env, userText, conversationHistory);
   }
 
+  // ============================================
+  // PIPELINE: Qwen NLU → Llama FC
+  // ============================================
+
+  // Stage 1: Qwen normalizes Indonesian slang
+  const normalized = await normalizeWithQwen(
+    env,
+    userText,
+    conversationHistory
+  );
+
+  // Stage 2: Llama executes function calling
+  let result = await executeWithLlama(
+    env,
+    normalized,
+    userText,
+    conversationHistory
+  );
+
+  // Stage 3: Validate — prevent runaway arrays, bad amounts
+  result = validateToolCalls(result);
+
+  // Fallback: if pipeline produced nothing
   if (result.toolCalls.length === 0 && !result.textResponse) {
-    console.warn("[AI] No tool_calls and no text response!");
-    result.textResponse = "Maaf bos, gue kurang paham. Coba ulangi ya.";
+    console.warn("[AI] Pipeline produced no output. Sending fallback.");
+    result.textResponse =
+      "Maaf bos, gue kurang paham. Coba ulangi ya, contoh: <i>makan 25rb, dapet 59rb</i>";
   }
 
   console.log(
-    `[AI] Parsed: ${result.toolCalls.length} tool calls, text: ${result.textResponse ? "yes" : "no"}`
+    `[AI] Pipeline done: ${result.toolCalls.length} tool calls, text: ${result.textResponse ? "yes" : "no"}`
   );
 
   return result;

@@ -1,10 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { isCasualChat } from "../../src/ai/engine";
+import { isCasualChat, validateToolCalls } from "../../src/ai/engine";
+import type { AIResult } from "../../src/ai/engine";
 
 describe("isCasualChat", () => {
-  // ============================================
-  // TRUE: Messages that should NOT trigger tool calls
-  // ============================================
   describe("casual messages → true", () => {
     const casualMessages = [
       "halo",
@@ -38,9 +36,6 @@ describe("isCasualChat", () => {
     }
   });
 
-  // ============================================
-  // FALSE: Messages that SHOULD trigger tool calls
-  // ============================================
   describe("financial/action messages → false", () => {
     const financialMessages = [
       "rokok goceng",
@@ -78,11 +73,8 @@ describe("isCasualChat", () => {
     }
   });
 
-  // ============================================
-  // Edge cases
-  // ============================================
   describe("edge cases", () => {
-    it("long casual message → false (>6 words bypass)", () => {
+    it("long casual message → false (>4 words bypass)", () => {
       expect(isCasualChat("halo bos gue mau nanya dong tentang fitur baru")).toBe(false);
     });
 
@@ -90,9 +82,113 @@ describe("isCasualChat", () => {
       expect(isCasualChat("")).toBe(false);
     });
 
-    it("financial with greeting prefix → false", () => {
-      // This is 4+ words with financial context, NOT casual
+    it("financial with greeting prefix → false (>4 words)", () => {
       expect(isCasualChat("hai bos rokok goceng makan 20rb")).toBe(false);
     });
+  });
+});
+
+describe("validateToolCalls", () => {
+  it("truncates runaway transaction arrays to max 10", () => {
+    const fakeTransactions = Array.from({ length: 50 }, (_, i) => ({
+      type: "expense",
+      amount: 1000,
+      category: "test",
+      description: `item-${i}`,
+    }));
+
+    const result: AIResult = {
+      toolCalls: [
+        {
+          name: "record_transactions",
+          arguments: { transactions: fakeTransactions },
+        },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls[0].arguments.transactions.length).toBe(10);
+  });
+
+  it("filters out invalid amounts (0, negative, >100M)", () => {
+    const result: AIResult = {
+      toolCalls: [
+        {
+          name: "record_transactions",
+          arguments: {
+            transactions: [
+              { type: "expense", amount: 5000, category: "rokok", description: "rokok" },
+              { type: "expense", amount: 0, category: "bad", description: "zero" },
+              { type: "expense", amount: -100, category: "bad", description: "negative" },
+              { type: "income", amount: 200000000, category: "bad", description: "too much" },
+              { type: "income", amount: 50000, category: "bonus", description: "bonus" },
+            ],
+          },
+        },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    const txns = validated.toolCalls[0].arguments.transactions;
+    expect(txns.length).toBe(2);
+    expect(txns[0].amount).toBe(5000);
+    expect(txns[1].amount).toBe(50000);
+  });
+
+  it("deduplicates same tool called multiple times", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "get_debts", arguments: { type: "all" } },
+        { name: "get_debts", arguments: { type: "hutang" } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls.length).toBe(1);
+  });
+
+  it("clamps invalid debt amount", () => {
+    const result: AIResult = {
+      toolCalls: [
+        {
+          name: "record_debt",
+          arguments: { type: "hutang", person_name: "Budi", amount: -500 },
+        },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls[0].arguments.amount).toBe(1);
+  });
+
+  it("passes through valid tool calls unchanged", () => {
+    const result: AIResult = {
+      toolCalls: [
+        {
+          name: "record_transactions",
+          arguments: {
+            transactions: [
+              { type: "expense", amount: 5000, category: "rokok", description: "rokok" },
+            ],
+          },
+        },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls[0].arguments.transactions.length).toBe(1);
+    expect(validated.toolCalls[0].arguments.transactions[0].amount).toBe(5000);
+  });
+
+  it("handles empty tool calls gracefully", () => {
+    const result: AIResult = { toolCalls: [], textResponse: "hello" };
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls.length).toBe(0);
+    expect(validated.textResponse).toBe("hello");
   });
 });

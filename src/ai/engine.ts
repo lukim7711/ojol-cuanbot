@@ -72,6 +72,16 @@ function getWIBDateString(): string {
 export function detectHallucinatedResponse(text: string | null): boolean {
   if (!text) return false;
 
+  // ============================================
+  // EXCLUSION: Clarification questions are NOT hallucinations
+  // "Mau dicatat sebagai pemasukan atau pengeluaran?" → false
+  // ============================================
+  const questionPatterns = [
+    /\bmau\s+(di)?(catat|simpan|hapus|ubah|edit|bayar|batalkan)/i,
+    /\?\s*$/,
+  ];
+  if (questionPatterns.some((p) => p.test(text))) return false;
+
   // Patterns that indicate AI "confirmed" a financial action without tool call
   const confirmPatterns = [
     /tercatat/i,
@@ -86,7 +96,7 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /sisa\s*(hutang)?\s*:?\s*rp/i,
     /bayar.*hutang.*rp/i,
     /pembayaran.*berhasil/i,
-    // NEW: Edit/delete/cancel hallucination patterns
+    // Edit/delete/cancel hallucination patterns
     /dihapus/i,
     /diubah/i,
     /dibatalkan/i,
@@ -114,7 +124,7 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /hutang/i,
     /piutang/i,
     /sisa/i,
-    // NEW: Edit/delete context indicators — even without Rp amount
+    // Edit/delete context indicators — even without Rp amount
     /transaksi/i,
     /kewajiban/i,
     /goal/i,

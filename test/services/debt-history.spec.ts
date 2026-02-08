@@ -76,7 +76,7 @@ describe("getDebtHistory — settled debt fallback", () => {
 
     const result = await getDebtHistory(mockDb, mockUser, { person_name: "Nobody" });
     expect(result.type).toBe("clarification");
-    expect(result.message).toContain("tidak ditemukan");
+    expect(result.message?.toLowerCase()).toContain("tidak ditemukan");
   });
 
   it("includes status field in response", async () => {

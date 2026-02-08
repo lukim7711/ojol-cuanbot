@@ -28,6 +28,14 @@ describe("detectHallucinatedResponse", () => {
     expect(detectHallucinatedResponse("Mau dicatat sebagai pemasukan atau pengeluaran?")).toBe(false);
   });
 
+  it("does NOT flag clarification with question mark", () => {
+    expect(detectHallucinatedResponse("Mau dihapus yang mana?")).toBe(false);
+  });
+
+  it("does NOT flag 'Mau disimpan sebagai apa?'", () => {
+    expect(detectHallucinatedResponse("Mau disimpan sebagai apa?")).toBe(false);
+  });
+
   it("returns false for null", () => {
     expect(detectHallucinatedResponse(null)).toBe(false);
   });
@@ -48,7 +56,7 @@ describe("detectHallucinatedResponse", () => {
     expect(detectHallucinatedResponse("Sisa hutang: Rp300.000")).toBe(true);
   });
 
-  // === NEW: Edit/delete/cancel hallucination patterns ===
+  // === Edit/delete/cancel hallucination patterns ===
   it("detects hallucinated delete: 'Dihapus! Pengeluaran Rp150.000'", () => {
     expect(detectHallucinatedResponse("🗑 Dihapus! Pengeluaran: Rp150.000")).toBe(true);
   });
@@ -79,11 +87,6 @@ describe("detectHallucinatedResponse", () => {
 
   it("detects 'sudah dibatalkan' with goal context", () => {
     expect(detectHallucinatedResponse("Goal sudah dibatalkan.")).toBe(true);
-  });
-
-  it("does NOT flag 'mau dihapus yang mana?' (question)", () => {
-    // This is a clarification question — no financial context indicator
-    expect(detectHallucinatedResponse("Mau dihapus yang mana?")).toBe(false);
   });
 });
 

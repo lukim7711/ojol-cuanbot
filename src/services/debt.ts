@@ -175,6 +175,49 @@ export async function recordDebt(
     return { type: "clarification", data: null, message: "Jumlah hutang tidak valid." };
   }
 
+  // ============================================
+  // DEDUP GUARD: Prevent duplicate debt from AI calling record_debt twice
+  // Check if there's an active debt to same person with same amount
+  // created within last 60 seconds
+  // ============================================
+  const personName = sanitizeString(args.person_name);
+  const existingDebt = await findActiveDebtByPerson(db, user.id, personName);
+
+  if (existingDebt) {
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const createdAt = (existingDebt as any).created_at;
+    const ageSeconds = nowUnix - createdAt;
+
+    // Same person, same amount, created < 60 seconds ago = duplicate
+    if (existingDebt.amount === amount && ageSeconds < 60) {
+      console.warn(
+        `[Debt] DEDUP: Skipping duplicate debt to "${personName}" (${amount}), created ${ageSeconds}s ago`
+      );
+      // Return as if recorded (user sees success, but no duplicate in DB)
+      const today = getDateFromOffset(0);
+      const { dueDate, nextPaymentDate } = resolveDueDate(args);
+      const dueDateStatus = getDebtStatus(dueDate, nextPaymentDate, today);
+
+      return {
+        type: "debt_recorded",
+        data: {
+          type: args.type,
+          person_name: args.person_name,
+          amount,
+          remaining: existingDebt.remaining,
+          due_date: existingDebt.due_date,
+          due_status: dueDateStatus,
+          interest_rate: existingDebt.interest_rate,
+          interest_type: existingDebt.interest_type,
+          tenor_months: existingDebt.tenor_months,
+          installment_amount: existingDebt.installment_amount,
+          installment_freq: existingDebt.installment_freq,
+          total_with_interest: existingDebt.total_with_interest,
+        },
+      };
+    }
+  }
+
   // Resolve due date
   const { dueDate, nextPaymentDate } = resolveDueDate(args);
 
@@ -201,7 +244,7 @@ export async function recordDebt(
     db,
     user.id,
     args.type,
-    sanitizeString(args.person_name),
+    personName,
     amount,
     remaining,
     args.note ? sanitizeString(args.note) : null,

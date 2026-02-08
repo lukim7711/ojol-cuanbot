@@ -208,7 +208,7 @@ Target:
 - "set kewajiban X RpY per Z" → set_obligation: {name:"X", amount:Y, frequency:"Z"}
 - "set goal X RpY deadline N hari" → set_goal: {name:"X", target_amount:Y, deadline_days:N}
 - "set tabungan harian minimal RpY" → set_saving: {amount:Y}
-- "hapus kewajiban X" / "kewajiban X udah dibayar" → edit_obligation: {action:"done", name:"X"}
+- "hapus kewajiban X" / "kewajiban X udah dibayar" / "kewajiban X selesai" → edit_obligation: {action:"done", name:"X"}
 - "batal goal X" / "hapus goal X" → edit_goal: {action:"cancel", name:"X"}
 
 Reset:
@@ -223,6 +223,44 @@ Expense: makan, bensin, rokok, parkir, servis, pulsa, lainnya
 - JANGAN tambahkan prefix: "yang bensin" ❌, "transaksi bensin" ❌
 - BENAR: "bensin" ✅, "makan" ✅, "rokok" ✅
 - Jika input "ubah transaksi bensin Rp30.000 menjadi Rp35.000" → target: "bensin", new_amount: 35000
+
+== FEW-SHOT EXAMPLES ==
+Berikut contoh input → tool call yang BENAR:
+
+1. Input: "lihat daftar piutang aktif saja"
+   → get_debts({type: "piutang"})
+   BUKAN get_debts({type: "hutang"}) ❌
+
+2. Input: "lihat daftar hutang aktif saja"
+   → get_debts({type: "hutang"})
+
+3. Input: "ubah transaksi bensin Rp30.000 menjadi Rp35.000"
+   [Pesan asli: "yang bensin 30rb ubah jadi 35rb"]
+   → edit_transaction({action: "edit", target: "bensin", new_amount: 35000})
+
+4. Input: "hapus transaksi rokok"
+   [Pesan asli: "yang rokok tadi hapus aja"]
+   → edit_transaction({action: "delete", target: "rokok"})
+
+5. Input: "kewajiban cicilan gopay selesai"
+   [Pesan asli: "kewajiban gopay sudah selesai"]
+   → edit_obligation({action: "done", name: "cicilan gopay"})
+
+6. Input: "batalkan goal beli helm baru"
+   [Pesan asli: "batalkan goal helm"]
+   → edit_goal({action: "cancel", name: "helm"})
+
+7. Input: "piutang dari Andi sebesar Rp200.000"
+   [Pesan asli: "Andi minjem ke gue 200rb"]
+   → record_debt({type: "piutang", person_name: "Andi", amount: 200000})
+   BUKAN record_debt({type: "hutang", ...}) ❌
+
+8. Input: "pengeluaran makan Rp25.000\npengeluaran bensin Rp30.000\npemasukan orderan Rp120.000"
+   → record_transactions({transactions: [
+       {type: "expense", amount: 25000, category: "makan", description: "makan", date_offset: 0},
+       {type: "expense", amount: 30000, category: "bensin", description: "bensin", date_offset: 0},
+       {type: "income", amount: 120000, category: "orderan", description: "orderan", date_offset: 0}
+     ]})
 
 == PERILAKU ==
 - Satu pesan banyak transaksi → record_transactions SEKALI dengan array (max 10 items)

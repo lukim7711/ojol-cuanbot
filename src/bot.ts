@@ -2,6 +2,7 @@ import { Bot, webhookCallback } from "grammy";
 import { Env } from "./config/env";
 import { handleStart } from "./handlers/start";
 import { handleMessage } from "./handlers/message";
+import { handleReset } from "./handlers/reset";
 
 export function createBot(env: Env) {
   const bot = new Bot(env.BOT_TOKEN, {
@@ -13,6 +14,7 @@ export function createBot(env: Env) {
   bot.command("help", (ctx) => handleStart(ctx, env));
   bot.command("rekap", (ctx) => handleMessage(ctx, env, "rekap hari ini"));
   bot.command("hutang", (ctx) => handleMessage(ctx, env, "daftar hutang dan piutang"));
+  bot.command("reset", (ctx) => handleReset(ctx, env));
 
   // Catch-all: semua pesan teks → AI pipeline
   bot.on("message:text", (ctx) => handleMessage(ctx, env));

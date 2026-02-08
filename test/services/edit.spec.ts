@@ -1,18 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock dependencies ──
+const mockFindTransactionByDescription = vi.fn();
+const mockFindTransactionByCategory = vi.fn();
+const mockFindTransactionBySourceText = vi.fn();
+const mockFindLastTransaction = vi.fn();
 const mockDeleteTransaction = vi.fn().mockResolvedValue({ success: true });
 const mockUpdateTransactionAmount = vi.fn().mockResolvedValue({ success: true });
 
 vi.mock("../../src/db/repository", () => ({
-  findRecentTransactionByDescription: vi.fn(),
+  findTransactionByDescription: (...args: any[]) => mockFindTransactionByDescription(...args),
+  findTransactionByCategory: (...args: any[]) => mockFindTransactionByCategory(...args),
+  findTransactionBySourceText: (...args: any[]) => mockFindTransactionBySourceText(...args),
+  findLastTransaction: (...args: any[]) => mockFindLastTransaction(...args),
   updateTransactionAmount: (...args: any[]) => mockUpdateTransactionAmount(...args),
   deleteTransaction: (...args: any[]) => mockDeleteTransaction(...args),
-  findRecentTransactionByAmount: vi.fn(),
-  getLastTransaction: vi.fn(),
-  findActiveDebtByPerson: vi.fn(),
-  updateDebtAmount: vi.fn(),
-  reinsertTransaction: vi.fn(),
 }));
 
 vi.mock("../../src/utils/validator", () => ({
@@ -21,7 +23,6 @@ vi.mock("../../src/utils/validator", () => ({
     if (!Number.isInteger(n) || n <= 0 || n > 100_000_000) return null;
     return n;
   }),
-  sanitizeString: vi.fn((s: string) => s),
 }));
 
 vi.mock("../../src/utils/formatter", () => ({
@@ -38,35 +39,16 @@ const mockUser: User = {
   timezone: "Asia/Jakarta",
 };
 
-// Helper: create a mock DB that simulates resolveTarget finding a transaction
-function createMockDB(foundTransaction: any | null) {
-  const mockFirst = vi.fn();
-  // resolveTarget calls db.prepare().bind().first() up to 4 times (4 layers)
-  // Return foundTransaction on first call, null on rest (or null for all if not found)
-  if (foundTransaction) {
-    mockFirst.mockResolvedValueOnce(foundTransaction);
-  } else {
-    mockFirst
-      .mockResolvedValueOnce(null)  // Layer 1: by description
-      .mockResolvedValueOnce(null)  // Layer 2: by category
-      .mockResolvedValueOnce(null)  // Layer 3: by source_text
-      // Layer 4: only if target matches "terakhir/barusan/tadi"
-      .mockResolvedValueOnce(null);
-  }
-
-  return {
-    prepare: vi.fn().mockReturnValue({
-      bind: vi.fn().mockReturnValue({
-        first: mockFirst,
-        run: vi.fn().mockResolvedValue({ success: true }),
-      }),
-    }),
-  } as unknown as D1Database;
-}
+const mockDB = {} as D1Database;
 
 describe("editOrDeleteTransaction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: all layers return null (not found)
+    mockFindTransactionByDescription.mockResolvedValue(null);
+    mockFindTransactionByCategory.mockResolvedValue(null);
+    mockFindTransactionBySourceText.mockResolvedValue(null);
+    mockFindLastTransaction.mockResolvedValue(null);
   });
 
   const sampleTrx = {
@@ -80,23 +62,25 @@ describe("editOrDeleteTransaction", () => {
 
   // ── DELETE ──
   it("deletes a found transaction", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "delete",
-      target: "makan",
+      target: "makan bu tami",
     });
 
     expect(result.type).toBe("edited");
     expect(result.message).toContain("Dihapus");
     expect(result.message).toContain("Pengeluaran");
     expect(result.data.deleted).toEqual(sampleTrx);
-    expect(mockDeleteTransaction).toHaveBeenCalledWith(db, 42);
+    expect(mockDeleteTransaction).toHaveBeenCalledWith(mockDB, 42);
   });
 
   it("labels income correctly on delete", async () => {
     const incomeTrx = { ...sampleTrx, type: "income", description: "orderan" };
-    const db = createMockDB(incomeTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(incomeTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "delete",
       target: "orderan",
     });
@@ -106,10 +90,11 @@ describe("editOrDeleteTransaction", () => {
 
   // ── EDIT ──
   it("edits amount of a found transaction", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "edit",
-      target: "makan",
+      target: "makan bu tami",
       new_amount: 20000,
     });
 
@@ -117,14 +102,15 @@ describe("editOrDeleteTransaction", () => {
     expect(result.message).toContain("Diubah");
     expect(result.data.old.amount).toBe(25000);
     expect(result.data.new.amount).toBe(20000);
-    expect(mockUpdateTransactionAmount).toHaveBeenCalledWith(db, 42, 20000);
+    expect(mockUpdateTransactionAmount).toHaveBeenCalledWith(mockDB, 42, 20000);
   });
 
   it("asks for clarification when edit has no new_amount", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "edit",
-      target: "makan",
+      target: "makan bu tami",
     });
 
     expect(result.type).toBe("clarification");
@@ -132,10 +118,11 @@ describe("editOrDeleteTransaction", () => {
   });
 
   it("asks for clarification when new_amount is invalid", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "edit",
-      target: "makan",
+      target: "makan bu tami",
       new_amount: -5000,
     });
 
@@ -145,8 +132,7 @@ describe("editOrDeleteTransaction", () => {
 
   // ── NOT FOUND ──
   it("returns clarification when transaction not found", async () => {
-    const db = createMockDB(null);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "delete",
       target: "sesuatu yang gak ada",
     });
@@ -157,53 +143,99 @@ describe("editOrDeleteTransaction", () => {
 
   // ── UNKNOWN ACTION ──
   it("returns clarification for unknown action", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "unknown" as any,
-      target: "makan",
+      target: "makan bu tami",
     });
 
     expect(result.type).toBe("clarification");
     expect(result.message).toContain("Mau diapain");
   });
 
-  // ── EDGE: delete transaction without description ──
+  // ── EDGE: delete without description ──
   it("handles delete of transaction without description", async () => {
     const noDescTrx = { ...sampleTrx, description: "" };
-    const db = createMockDB(noDescTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(noDescTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "delete",
       target: "makan",
     });
 
     expect(result.type).toBe("edited");
     expect(result.message).toContain("Dihapus");
-    // Should not have trailing " — "
     expect(result.message).not.toContain(" — \n");
   });
 
-  // ── EDIT preserves description in message ──
   it("includes description in edit message", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "edit",
-      target: "makan",
+      target: "makan bu tami",
       new_amount: 30000,
     });
 
     expect(result.message).toContain("makan di bu tami");
   });
 
-  // ── EDIT with boundary amount (100 million) ──
   it("accepts edit with maximum valid amount", async () => {
-    const db = createMockDB(sampleTrx);
-    const result = await editOrDeleteTransaction(db, mockUser, {
+    mockFindTransactionByDescription.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
       action: "edit",
-      target: "makan",
+      target: "makan bu tami",
       new_amount: 100_000_000,
     });
 
     expect(result.type).toBe("edited");
     expect(result.data.new.amount).toBe(100_000_000);
+  });
+
+  // ── RESOLVE TARGET: Layer 2 — category match ──
+  it("finds transaction via category when description not matched", async () => {
+    mockFindTransactionByCategory.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
+      action: "delete",
+      target: "makan",
+    });
+
+    expect(result.type).toBe("edited");
+    expect(mockFindTransactionByDescription).toHaveBeenCalled();
+    expect(mockFindTransactionByCategory).toHaveBeenCalledWith(mockDB, 1, "makan");
+    expect(mockDeleteTransaction).toHaveBeenCalledWith(mockDB, 42);
+  });
+
+  // ── RESOLVE TARGET: Layer 3 — source_text match ──
+  it("finds transaction via source_text when desc and category not matched", async () => {
+    mockFindTransactionBySourceText.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
+      action: "delete",
+      target: "dapet 59rb makan 25rb",
+    });
+
+    expect(result.type).toBe("edited");
+    expect(mockFindTransactionByDescription).toHaveBeenCalled();
+    expect(mockFindTransactionByCategory).toHaveBeenCalled();
+    expect(mockFindTransactionBySourceText).toHaveBeenCalled();
+    expect(mockDeleteTransaction).toHaveBeenCalledWith(mockDB, 42);
+  });
+
+  // ── RESOLVE TARGET: Layer 4 — "terakhir" fallback ──
+  it("finds last transaction when target says 'yang terakhir'", async () => {
+    mockFindLastTransaction.mockResolvedValue(sampleTrx);
+
+    const result = await editOrDeleteTransaction(mockDB, mockUser, {
+      action: "delete",
+      target: "yang terakhir",
+    });
+
+    expect(result.type).toBe("edited");
+    expect(mockFindLastTransaction).toHaveBeenCalledWith(mockDB, 1);
+    expect(mockDeleteTransaction).toHaveBeenCalledWith(mockDB, 42);
   });
 });

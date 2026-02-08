@@ -235,20 +235,83 @@ export async function saveConversation(
     .run();
 }
 
-// ── EDIT/DELETE ──
-export async function findRecentTransactionByDescription(
+// ── EDIT/DELETE: Transaction lookup ──
+
+export interface FoundTransaction {
+  id: number;
+  type: string;
+  amount: number;
+  description: string;
+  category_name: string | null;
+  trx_date: string;
+}
+
+const FOUND_TRX_SELECT = `
+  SELECT t.id, t.type, t.amount, t.description, c.name as category_name, t.trx_date
+  FROM transactions t
+  LEFT JOIN categories c ON t.category_id = c.id`;
+
+export async function findTransactionByDescription(
   db: D1Database,
   userId: number,
-  target: string
+  likePattern: string
 ) {
   return db
     .prepare(
-      `SELECT id, amount, description FROM transactions 
-       WHERE user_id = ? AND description LIKE ? 
-       ORDER BY created_at DESC LIMIT 1`
+      `${FOUND_TRX_SELECT}
+       WHERE t.user_id = ? AND LOWER(t.description) LIKE LOWER(?)
+       ORDER BY t.created_at DESC
+       LIMIT 1`
     )
-    .bind(userId, `%${target}%`)
-    .first<{ id: number; amount: number; description: string }>();
+    .bind(userId, likePattern)
+    .first<FoundTransaction>();
+}
+
+export async function findTransactionByCategory(
+  db: D1Database,
+  userId: number,
+  categoryName: string
+) {
+  return db
+    .prepare(
+      `${FOUND_TRX_SELECT}
+       WHERE t.user_id = ? AND LOWER(c.name) = LOWER(?)
+       ORDER BY t.created_at DESC
+       LIMIT 1`
+    )
+    .bind(userId, categoryName)
+    .first<FoundTransaction>();
+}
+
+export async function findTransactionBySourceText(
+  db: D1Database,
+  userId: number,
+  searchText: string
+) {
+  return db
+    .prepare(
+      `${FOUND_TRX_SELECT}
+       WHERE t.user_id = ? AND LOWER(t.source_text) LIKE LOWER(?)
+       ORDER BY t.created_at DESC
+       LIMIT 1`
+    )
+    .bind(userId, `%${searchText}%`)
+    .first<FoundTransaction>();
+}
+
+export async function findLastTransaction(
+  db: D1Database,
+  userId: number
+) {
+  return db
+    .prepare(
+      `${FOUND_TRX_SELECT}
+       WHERE t.user_id = ?
+       ORDER BY t.created_at DESC
+       LIMIT 1`
+    )
+    .bind(userId)
+    .first<FoundTransaction>();
 }
 
 export async function updateTransactionAmount(
@@ -264,4 +327,27 @@ export async function updateTransactionAmount(
 
 export async function deleteTransaction(db: D1Database, trxId: number) {
   return db.prepare("DELETE FROM transactions WHERE id = ?").bind(trxId).run();
+}
+
+// ── EDIT/DELETE: Debt operations ──
+
+export async function settleDebt(db: D1Database, debtId: number) {
+  return db
+    .prepare(
+      `UPDATE debts SET status = 'settled', settled_at = unixepoch() WHERE id = ?`
+    )
+    .bind(debtId)
+    .run();
+}
+
+export async function updateDebtAmountAndRemaining(
+  db: D1Database,
+  debtId: number,
+  newAmount: number,
+  newRemaining: number
+) {
+  return db
+    .prepare(`UPDATE debts SET amount = ?, remaining = ? WHERE id = ?`)
+    .bind(newAmount, newRemaining, debtId)
+    .run();
 }

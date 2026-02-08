@@ -2,10 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock dependencies ──
 const mockFindActiveDebtByPerson = vi.fn();
+const mockSettleDebt = vi.fn().mockResolvedValue({ success: true });
+const mockUpdateDebtAmountAndRemaining = vi.fn().mockResolvedValue({ success: true });
 
 vi.mock("../../src/db/repository", () => ({
   findActiveDebtByPerson: (...args: any[]) => mockFindActiveDebtByPerson(...args),
-  updateDebtRemaining: vi.fn().mockResolvedValue({ success: true }),
+  settleDebt: (...args: any[]) => mockSettleDebt(...args),
+  updateDebtAmountAndRemaining: (...args: any[]) => mockUpdateDebtAmountAndRemaining(...args),
 }));
 
 vi.mock("../../src/utils/validator", () => ({
@@ -30,15 +33,7 @@ const mockUser: User = {
   timezone: "Asia/Jakarta",
 };
 
-// edit-debt.ts uses db.prepare().bind().run() directly for delete and edit
-const mockRun = vi.fn().mockResolvedValue({ success: true });
-const mockDB = {
-  prepare: vi.fn().mockReturnValue({
-    bind: vi.fn().mockReturnValue({
-      run: mockRun,
-    }),
-  }),
-} as unknown as D1Database;
+const mockDB = {} as D1Database;
 
 const sampleDebt = {
   id: 10,
@@ -74,8 +69,7 @@ describe("editDebt", () => {
     expect(result.message).toContain("dihapus");
     expect(result.message).toContain("Budi");
     expect(result.data.deleted_debt).toEqual(sampleDebt);
-    // db.prepare should have been called for the UPDATE query
-    expect(mockDB.prepare).toHaveBeenCalled();
+    expect(mockSettleDebt).toHaveBeenCalledWith(mockDB, 10);
   });
 
   // ── EDIT ──
@@ -94,11 +88,10 @@ describe("editDebt", () => {
     // remaining = max(0, 200000 + (300000 - 200000)) = 300000
     expect(result.data.new_remaining).toBe(300000);
     expect(result.message).toContain("diubah");
+    expect(mockUpdateDebtAmountAndRemaining).toHaveBeenCalledWith(mockDB, 10, 300000, 300000);
   });
 
   it("adjusts remaining correctly when decreasing amount", async () => {
-    // Debt: amount=200000, remaining=200000
-    // New amount=150000, diff=-50000, remaining = max(0, 200000 + (-50000)) = 150000
     mockFindActiveDebtByPerson.mockResolvedValue(sampleDebt);
 
     const result = await editDebt(mockDB, mockUser, {
@@ -108,11 +101,10 @@ describe("editDebt", () => {
     });
 
     expect(result.data.new_remaining).toBe(150000);
+    expect(mockUpdateDebtAmountAndRemaining).toHaveBeenCalledWith(mockDB, 10, 150000, 150000);
   });
 
   it("clamps remaining to 0 when decrease is larger than remaining", async () => {
-    // Debt: amount=200000, remaining=50000 (sudah bayar 150000)
-    // New amount=10000, diff=-190000, remaining = max(0, 50000 + (-190000)) = max(0, -140000) = 0
     const partialPaid = { ...sampleDebt, remaining: 50000 };
     mockFindActiveDebtByPerson.mockResolvedValue(partialPaid);
 
@@ -123,6 +115,7 @@ describe("editDebt", () => {
     });
 
     expect(result.data.new_remaining).toBe(0);
+    expect(mockUpdateDebtAmountAndRemaining).toHaveBeenCalledWith(mockDB, 10, 10000, 0);
   });
 
   // ── NOT FOUND ──
@@ -162,7 +155,6 @@ describe("editDebt", () => {
       person_name: "Budi",
     });
 
-    // edit-debt returns generic clarification when no new_amount and action is edit
     expect(result.type).toBe("clarification");
     expect(result.message).toContain("Mau diapain");
   });

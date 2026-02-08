@@ -56,6 +56,38 @@ function parseToolArguments(args: any): any {
 }
 
 /**
+ * Deep-parse any stringified JSON values in tool arguments.
+ * Llama sometimes returns {transactions: "[{...}]"} instead of {transactions: [{...}]}
+ */
+function deepParseArguments(args: any): any {
+  if (typeof args !== "object" || args === null) return args;
+
+  const result: any = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string") {
+      // Try to parse string values that look like JSON arrays or objects
+      const trimmed = (value as string).trim();
+      if (
+        (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+        (trimmed.startsWith("{") && trimmed.endsWith("}"))
+      ) {
+        try {
+          result[key] = JSON.parse(trimmed);
+          console.log(
+            `[AI] Deep-parsed string field "${key}": string → ${Array.isArray(result[key]) ? "array" : "object"}`
+          );
+          continue;
+        } catch (_) {
+          // Not valid JSON, keep as string
+        }
+      }
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+/**
  * Get current date in WIB (UTC+7)
  */
 function getWIBDateString(): string {
@@ -123,7 +155,11 @@ function parseAIResponse(response: any): AIResult {
       continue;
     }
 
-    const parsedArgs = parseToolArguments(rawArgs);
+    // Parse top-level arguments (string → object)
+    let parsedArgs = parseToolArguments(rawArgs);
+    // Deep-parse nested string fields (e.g. transactions: "[{...}]" → [{...}])
+    parsedArgs = deepParseArguments(parsedArgs);
+
     console.log(`[AI] Tool call: ${name}`, JSON.stringify(parsedArgs));
 
     toolCalls.push({ name, arguments: parsedArgs });
@@ -148,10 +184,39 @@ export function validateToolCalls(result: AIResult): AIResult {
   const MAX_AMOUNT = 100_000_000; // 100 juta
 
   for (const tc of result.toolCalls) {
-    // Guard: limit transactions array size
+    // Guard: ensure transactions is an array (Llama sometimes returns string)
     if (tc.name === "record_transactions" && tc.arguments.transactions) {
-      const txns = tc.arguments.transactions;
-      if (Array.isArray(txns) && txns.length > MAX_TRANSACTIONS) {
+      let txns = tc.arguments.transactions;
+
+      // Safety: parse if still a string after deepParseArguments
+      if (typeof txns === "string") {
+        try {
+          txns = JSON.parse(txns);
+          tc.arguments.transactions = txns;
+          console.log(
+            "[Validate] Parsed transactions from string to array"
+          );
+        } catch (_) {
+          console.error(
+            "[Validate] Cannot parse transactions string. Clearing."
+          );
+          tc.arguments.transactions = [];
+          continue;
+        }
+      }
+
+      // Guard: must be array
+      if (!Array.isArray(txns)) {
+        console.error(
+          "[Validate] transactions is not an array:",
+          typeof txns
+        );
+        tc.arguments.transactions = [];
+        continue;
+      }
+
+      // Guard: limit array size
+      if (txns.length > MAX_TRANSACTIONS) {
         console.warn(
           `[Validate] Runaway array detected: ${txns.length} items. Truncating to ${MAX_TRANSACTIONS}.`
         );
@@ -208,17 +273,17 @@ export function validateToolCalls(result: AIResult): AIResult {
 
 // ============================================================
 // STAGE 1: Qwen NLU — normalize slang to formal Indonesian
+// NO conversation history — only normalize current message
 // ============================================================
 async function normalizeWithQwen(
   env: Env,
-  userText: string,
-  conversationHistory: ConversationMessage[]
+  userText: string
 ): Promise<string> {
   const currentDate = getWIBDateString();
 
+  // NLU gets NO conversation history — prevents re-translating old messages
   const messages = [
     { role: "system" as const, content: buildNLUPrompt(currentDate) },
-    ...conversationHistory,
     { role: "user" as const, content: userText },
   ];
 
@@ -251,6 +316,7 @@ async function normalizeWithQwen(
 
 // ============================================================
 // STAGE 2: Llama Executor — reliable function calling
+// Gets conversation history for edit/context awareness
 // ============================================================
 async function executeWithLlama(
   env: Env,
@@ -343,13 +409,13 @@ async function handleCasualChat(
     response.choices?.[0]?.message?.content ??
     response.response ??
     response.content ??
-    "Halo bos! Ada yang bisa gue bantu? 😎";
+    "Halo bos! Ada yang bisa gue bantu? \ud83d\ude0e";
 
   if (typeof text === "string") {
     text = stripThinkingTags(text);
   }
 
-  return { toolCalls: [], textResponse: text || "Halo bos! 😎" };
+  return { toolCalls: [], textResponse: text || "Halo bos! \ud83d\ude0e" };
 }
 
 // ============================================================
@@ -375,14 +441,10 @@ export async function runAI(
   // PIPELINE: Qwen NLU → Llama FC
   // ============================================
 
-  // Stage 1: Qwen normalizes Indonesian slang
-  const normalized = await normalizeWithQwen(
-    env,
-    userText,
-    conversationHistory
-  );
+  // Stage 1: Qwen normalizes Indonesian slang (NO history — current msg only)
+  const normalized = await normalizeWithQwen(env, userText);
 
-  // Stage 2: Llama executes function calling
+  // Stage 2: Llama executes function calling (WITH history for edit context)
   let result = await executeWithLlama(
     env,
     normalized,

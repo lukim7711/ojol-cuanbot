@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   detectHallucinatedResponse,
   looksLikeFinancialInput,
+  looksLikeActionQuery,
+  shouldHaveToolCall,
 } from "../../src/ai/engine";
 
 describe("detectHallucinatedResponse", () => {
@@ -20,7 +22,7 @@ describe("detectHallucinatedResponse", () => {
   it("detects 'Tercatat' with Rp amount", () => {
     expect(
       detectHallucinatedResponse(
-        "✅ Tercatat!\n💰 Pemasukan: Rp10.000 — ceban dari tip"
+        "\u2705 Tercatat!\n\ud83d\udcb0 Pemasukan: Rp10.000 \u2014 ceban dari tip"
       )
     ).toBe(true);
   });
@@ -28,7 +30,7 @@ describe("detectHallucinatedResponse", () => {
   it("detects 'Dicatat' with Rp amount", () => {
     expect(
       detectHallucinatedResponse(
-        "Dicatat!\nPengeluaran: Rp5.000 — rokok goceng"
+        "Dicatat!\nPengeluaran: Rp5.000 \u2014 rokok goceng"
       )
     ).toBe(true);
   });
@@ -44,7 +46,7 @@ describe("detectHallucinatedResponse", () => {
   it("detects 'Berhasil disimpan' with pengeluaran", () => {
     expect(
       detectHallucinatedResponse(
-        "Berhasil disimpan! Pengeluaran: Rp30.000 — bensin"
+        "Berhasil disimpan! Pengeluaran: Rp30.000 \u2014 bensin"
       )
     ).toBe(true);
   });
@@ -149,11 +151,100 @@ describe("looksLikeFinancialInput", () => {
     expect(looksLikeFinancialInput("bayar hutang ke Budi 300rb")).toBe(true);
   });
 
+  // Edit patterns
+  it("detects 'yang terakhir salah, harusnya 250rb'", () => {
+    expect(looksLikeFinancialInput("yang terakhir salah, harusnya 250rb")).toBe(true);
+  });
+
+  it("detects 'hutang ke Siti ternyata 1.5jt'", () => {
+    expect(looksLikeFinancialInput("hutang ke Siti ternyata 1.5jt, bukan 1jt")).toBe(true);
+  });
+
   it("returns false for just numbers without context", () => {
     expect(looksLikeFinancialInput("123456")).toBe(false);
   });
 
   it("returns false for non-financial text with numbers", () => {
     expect(looksLikeFinancialInput("gue udah 3 tahun narik")).toBe(false);
+  });
+});
+
+describe("looksLikeActionQuery", () => {
+  it("returns false for greeting", () => {
+    expect(looksLikeActionQuery("halo bos")).toBe(false);
+  });
+
+  it("returns false for random text", () => {
+    expect(looksLikeActionQuery("apa kabar")).toBe(false);
+  });
+
+  it("detects 'daftar piutang'", () => {
+    expect(looksLikeActionQuery("daftar piutang")).toBe(true);
+  });
+
+  it("detects 'daftar hutang'", () => {
+    expect(looksLikeActionQuery("daftar hutang gue")).toBe(true);
+  });
+
+  it("detects 'daftar semua hutang dan piutang'", () => {
+    expect(looksLikeActionQuery("daftar semua hutang dan piutang")).toBe(true);
+  });
+
+  it("detects 'cek hutang'", () => {
+    expect(looksLikeActionQuery("cek hutang")).toBe(true);
+  });
+
+  it("detects 'riwayat pembayaran hutang Budi'", () => {
+    expect(looksLikeActionQuery("riwayat pembayaran hutang Budi")).toBe(true);
+  });
+
+  it("detects '/hutang'", () => {
+    expect(looksLikeActionQuery("/hutang")).toBe(true);
+  });
+
+  it("detects 'target hari ini'", () => {
+    expect(looksLikeActionQuery("target hari ini")).toBe(true);
+  });
+
+  it("detects 'berapa target gue'", () => {
+    expect(looksLikeActionQuery("berapa target gue")).toBe(true);
+  });
+
+  it("detects 'rekap'", () => {
+    expect(looksLikeActionQuery("rekap")).toBe(true);
+  });
+
+  it("detects 'hapus hutang Budi'", () => {
+    expect(looksLikeActionQuery("hapus hutang Budi")).toBe(true);
+  });
+
+  it("detects 'batal goal helm'", () => {
+    expect(looksLikeActionQuery("batal goal helm")).toBe(true);
+  });
+
+  it("detects 'hapus cicilan gopay'", () => {
+    expect(looksLikeActionQuery("hapus cicilan gopay")).toBe(true);
+  });
+});
+
+describe("shouldHaveToolCall", () => {
+  it("returns true for financial input", () => {
+    expect(shouldHaveToolCall("dapet 120rb dari orderan")).toBe(true);
+  });
+
+  it("returns true for action query", () => {
+    expect(shouldHaveToolCall("daftar piutang")).toBe(true);
+  });
+
+  it("returns true for edit with number", () => {
+    expect(shouldHaveToolCall("yang terakhir salah, harusnya 250rb")).toBe(true);
+  });
+
+  it("returns false for casual chat", () => {
+    expect(shouldHaveToolCall("makasih bos")).toBe(false);
+  });
+
+  it("returns false for general question", () => {
+    expect(shouldHaveToolCall("apa itu cuanbot")).toBe(false);
   });
 });

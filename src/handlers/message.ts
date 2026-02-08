@@ -6,6 +6,35 @@ import { processToolCalls } from "../services/router";
 import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
 
+/**
+ * In-memory set to track recently processed Telegram message IDs.
+ * Prevents duplicate processing when Telegram retries webhook
+ * after timeout (Worker processed the message but ctx.reply() timed out).
+ *
+ * Note: This is per-isolate, not global. But sufficient because
+ * Telegram retries hit the same worker within seconds.
+ * Max 1000 entries with auto-cleanup to prevent memory leak.
+ */
+const processedMessages = new Set<string>();
+const MAX_PROCESSED_CACHE = 1000;
+
+function getMessageKey(chatId: number | undefined, messageId: number | undefined): string | null {
+  if (!chatId || !messageId) return null;
+  return `${chatId}:${messageId}`;
+}
+
+function cleanupProcessedCache(): void {
+  if (processedMessages.size > MAX_PROCESSED_CACHE) {
+    // Remove oldest half
+    const entries = Array.from(processedMessages);
+    const removeCount = Math.floor(entries.length / 2);
+    for (let i = 0; i < removeCount; i++) {
+      processedMessages.delete(entries[i]);
+    }
+    console.log(`[Dedup] Cleaned cache: removed ${removeCount}, remaining ${processedMessages.size}`);
+  }
+}
+
 export async function handleMessage(
   ctx: Context,
   env: Env,
@@ -13,6 +42,20 @@ export async function handleMessage(
 ) {
   const text = override ?? ctx.message?.text;
   if (!text || !ctx.from) return;
+
+  // ============================================
+  // IDEMPOTENCY GUARD: Skip duplicate webhook calls
+  // Telegram retries when our response is slow (>10s)
+  // ============================================
+  const messageKey = getMessageKey(ctx.chat?.id, ctx.message?.message_id);
+  if (messageKey) {
+    if (processedMessages.has(messageKey)) {
+      console.warn(`[Dedup] Skipping duplicate message: ${messageKey}`);
+      return;
+    }
+    processedMessages.add(messageKey);
+    cleanupProcessedCache();
+  }
 
   try {
     const telegramId = String(ctx.from.id);
@@ -57,7 +100,7 @@ export async function handleMessage(
   } catch (error) {
     console.error("[Bot] Handler error:", error);
     try {
-      await ctx.reply("⚠️ Waduh, ada error nih. Coba lagi ya.");
+      await ctx.reply("\u26a0\ufe0f Waduh, ada error nih. Coba lagi ya.");
     } catch (_) {
       // Jika bahkan error reply gagal, abaikan
     }

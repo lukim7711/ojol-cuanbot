@@ -106,7 +106,7 @@ ojol-cuanbot/
 │   │   ├── router.ts         # Tool call dispatcher
 │   │   ├── transaction.ts    # Income/expense recording
 │   │   ├── debt.ts           # Hutang: record, pay, list, history, interest, overdue
-│   │   ├── edit.ts           # Edit/delete transactions
+│   │   ├── edit.ts           # Edit/delete transactions (multi-layer search)
 │   │   ├── edit-debt.ts      # Edit/delete debts
 │   │   ├── summary.ts        # Rekap: today, yesterday, this_week, this_month
 │   │   ├── target.ts         # Smart daily target calculation
@@ -126,8 +126,14 @@ ojol-cuanbot/
 │   ├── index.spec.ts         # Worker entry point tests (3 tests)
 │   ├── env.d.ts              # Test environment type declarations
 │   ├── tsconfig.json         # Test-specific tsconfig
+│   ├── ai/
+│   │   └── engine.spec.ts    # AI engine tests (10 tests)
 │   ├── services/
 │   │   ├── transaction.spec.ts  # Transaction recording tests (15 tests)
+│   │   ├── edit.spec.ts         # Edit/delete transaction tests (10 tests)
+│   │   ├── edit-debt.spec.ts    # Edit/delete debt tests (8 tests)
+│   │   ├── summary.spec.ts      # Summary/rekap tests (7 tests)
+│   │   ├── user.spec.ts         # User service tests (5 tests)
 │   │   ├── debt.spec.ts         # Smart debt tests (~12 tests)
 │   │   ├── router.spec.ts       # Tool call dispatch tests (11 tests)
 │   │   └── target.spec.ts       # Smart target calculation tests
@@ -304,15 +310,16 @@ CREATE TABLE user_settings (
 - Service: `src/services/target.ts`
 
 #### 6.4 Rekap Keuangan
-- Period: today, yesterday, this_week, this_month
+- Period: today, yesterday, this_week, this_month, custom
 - Total income, expense, net
 - Detail per transaksi
 - Service: `src/services/summary.ts`
 
 #### 6.5 Edit & Hapus
-- Edit transaksi (ubah jumlah/deskripsi)
+- Edit transaksi: multi-layer search (description, category, source_text, last)
 - Hapus transaksi
-- Edit hutang
+- Edit hutang (adjust remaining proportionally)
+- Hapus hutang (soft delete: set status = settled)
 - Service: `src/services/edit.ts`, `src/services/edit-debt.ts`
 
 #### 6.6 /start Command
@@ -324,7 +331,8 @@ CREATE TABLE user_settings (
 - Workers AI (Qwen3-30B-A3B) wrapper
 - `<think>` tag stripping (Qwen3 quirk)
 - Robust argument parsing (string → object)
-- OpenAI-compatible API format
+- OpenAI-compatible & legacy format support
+- Malformed JSON fallback (regex extraction)
 - Engine: `src/ai/engine.ts`
 
 #### 6.8 CI/CD
@@ -438,6 +446,7 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | Empty reply | Jika AI return tool calls tanpa text, formatter bisa return empty string | `formatter.ts` has "Diproses!" fallback |
 | BOT_INFO must be valid JSON | `wrangler.jsonc` vars `BOT_INFO` harus valid JSON string | Set via `npx wrangler secret put` atau update vars |
 | D1 migration manual | Migrations tidak auto-run, harus manual via wrangler CLI | `npx wrangler d1 migrations apply cuanbot-db` |
+| router.spec.ts stderr | `[Target] Failed to calculate progress: db.prepare is not a function` — expected because mockDB = {} | Not a real error, target calc is try/catch in source |
 
 ---
 
@@ -450,17 +459,15 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | `test/utils/date.spec.ts` | 12 | `getDateFromOffset`, `getDateRange` (today, yesterday, this_week, this_month) |
 | `test/utils/formatter.spec.ts` | 19 | `formatRupiah`, `formatReply` (all ToolCallResult types) |
 | `test/services/router.spec.ts` | 11 | All tool routes, multi tool calls, unknown tool, empty calls |
+| `test/services/transaction.spec.ts` | 15 | Recording, validation, skip invalid, date offset, category lookup, sanitization |
 | `test/services/debt.spec.ts` | ~12 | Interest calc, overdue detection, next payment, debt history |
 | `test/services/target.spec.ts` | varies | Smart target calculation |
-| `test/services/transaction.spec.ts` | 15 | Recording, validation, skip invalid, date offset, category lookup |
-| **Total** | **~91+** | **All pass** |
-
-### Belum ada test (Tahap 2 roadmap):
-- `src/services/edit.ts`
-- `src/services/edit-debt.ts`
-- `src/services/summary.ts`
-- `src/services/user.ts`
-- `src/ai/engine.ts`
+| `test/services/edit.spec.ts` | 10 | Delete, edit, not found, invalid amount, unknown action, edge cases |
+| `test/services/edit-debt.spec.ts` | 8 | Soft delete, edit amount, remaining adjustment, clamp to 0, not found |
+| `test/services/summary.spec.ts` | 7 | Totals calculation, period labels, custom range, empty period |
+| `test/services/user.spec.ts` | 5 | Get existing, create new, throw on failure, argument passing |
+| `test/ai/engine.spec.ts` | 10 | OpenAI format, legacy format, text extraction, think strip, malformed JSON, multi tool calls |
+| **Total** | **~131+** | **All pass** |
 
 ---
 
@@ -480,8 +487,8 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | 2026-02-07 | Validator bugfix | Fix double-escaping in sanitizeString |
 | 2026-02-07 | AI response fix | Fix empty reply, robust parsing, `<think>` tag strip (PR #3, #4) |
 | 2026-02-07 | Smart debt deploy | Migration 0003, full smart debt features (PR #10) |
-| 2026-02-08 | Documentation | README.md + AI_CONTEXT.md |
-| 2026-02-08 | Tahap 1 cleanup | Add transaction test, remove stubs, update AI_CONTEXT.md |
+| 2026-02-08 | Tahap 1 cleanup | Remove stubs, add transaction test, rewrite AI_CONTEXT.md (PR #12) |
+| 2026-02-08 | Tahap 2 hardening | Add 5 test files (edit, edit-debt, summary, user, engine) — ~40 new tests |
 
 ---
 
@@ -493,13 +500,14 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 3. Jika butuh schema baru → buat migration file `migrations/0004_*.sql` dst
 4. Implementasi: repository → service → tools → prompt → formatter → router
 5. Tambah test jika logic complex
-6. Push, buat PR, minta user review
-7. Setelah merge, **UPDATE file AI_CONTEXT.md ini** (section 4, 6, 11, 12)
+6. Push, buat PR, tunggu CI pass
+7. Setelah user bilang merge, squash merge ke main
+8. **UPDATE file AI_CONTEXT.md ini** (section 4, 6, 11, 12)
 
 ### Ketika diminta MEMPERBAIKI BUG:
 1. Buat branch `hotfix/<deskripsi>`
 2. Fix di file yang relevan
-3. Push, buat PR, merge
+3. Push, buat PR, tunggu CI pass
 4. Update AI_CONTEXT.md jika ada perubahan signifikan
 
 ### Ketika diminta REFACTOR:
@@ -533,4 +541,4 @@ AI akan membaca file ini dan langsung punya konteks lengkap tanpa perlu mengulan
 
 ---
 
-*Last updated: 2026-02-08 — Tahap 1 cleanup*
+*Last updated: 2026-02-08 — Tahap 2 test hardening*

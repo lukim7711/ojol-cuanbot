@@ -1,14 +1,13 @@
 import {
-  findRecentTransactionByDescription,
+  findTransactionByDescription,
+  findTransactionByCategory,
+  findTransactionBySourceText,
+  findLastTransaction,
   updateTransactionAmount,
   deleteTransaction,
-  findRecentTransactionByAmount,
-  getLastTransaction,
-  findActiveDebtByPerson,
-  updateDebtAmount,
-  reinsertTransaction,
+  FoundTransaction,
 } from "../db/repository";
-import { validateAmount, sanitizeString } from "../utils/validator";
+import { validateAmount } from "../utils/validator";
 import { formatRupiah } from "../utils/formatter";
 import { User, ToolCallResult } from "../types/transaction";
 
@@ -59,15 +58,6 @@ export async function editOrDeleteTransaction(
 // RESOLVE TARGET: Multi-layer matching strategy
 // ─────────────────────────────────────────────────
 
-interface FoundTransaction {
-  id: number;
-  type: string;
-  amount: number;
-  description: string;
-  category_name: string | null;
-  trx_date: string;
-}
-
 async function resolveTarget(
   db: D1Database,
   userId: number,
@@ -82,52 +72,18 @@ async function resolveTarget(
 
   if (keywords.length > 0) {
     const likePattern = `%${keywords.join("%")}%`;
-
-    const byDesc = await db
-      .prepare(
-        `SELECT t.id, t.type, t.amount, t.description, c.name as category_name, t.trx_date
-         FROM transactions t
-         LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.user_id = ? AND LOWER(t.description) LIKE LOWER(?)
-         ORDER BY t.created_at DESC
-         LIMIT 1`
-      )
-      .bind(userId, likePattern)
-      .first<FoundTransaction>();
-
+    const byDesc = await findTransactionByDescription(db, userId, likePattern);
     if (byDesc) return byDesc;
   }
 
   // Layer 2: Cari berdasarkan kategori
   // target mungkin cuma "makan" atau "bensin"
-  const byCat = await db
-    .prepare(
-      `SELECT t.id, t.type, t.amount, t.description, c.name as category_name, t.trx_date
-       FROM transactions t
-       LEFT JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND LOWER(c.name) = LOWER(?)
-       ORDER BY t.created_at DESC
-       LIMIT 1`
-    )
-    .bind(userId, target.toLowerCase().trim())
-    .first<FoundTransaction>();
-
+  const byCat = await findTransactionByCategory(db, userId, target.toLowerCase().trim());
   if (byCat) return byCat;
 
   // Layer 3: Cari berdasarkan source_text asli
   // Kadang AI kasih target yang mirip kalimat asli user
-  const bySource = await db
-    .prepare(
-      `SELECT t.id, t.type, t.amount, t.description, c.name as category_name, t.trx_date
-       FROM transactions t
-       LEFT JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND LOWER(t.source_text) LIKE LOWER(?)
-       ORDER BY t.created_at DESC
-       LIMIT 1`
-    )
-    .bind(userId, `%${target.toLowerCase()}%`)
-    .first<FoundTransaction>();
-
+  const bySource = await findTransactionBySourceText(db, userId, target.toLowerCase());
   if (bySource) return bySource;
 
   // Layer 4: Fallback — ambil transaksi paling terakhir
@@ -136,18 +92,7 @@ async function resolveTarget(
     /terakhir|barusan|tadi|baru aja|yang tadi/.test(target.toLowerCase());
 
   if (isReferringToLast) {
-    const last = await db
-      .prepare(
-        `SELECT t.id, t.type, t.amount, t.description, c.name as category_name, t.trx_date
-         FROM transactions t
-         LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.user_id = ?
-         ORDER BY t.created_at DESC
-         LIMIT 1`
-      )
-      .bind(userId)
-      .first<FoundTransaction>();
-
+    const last = await findLastTransaction(db, userId);
     if (last) return last;
   }
 

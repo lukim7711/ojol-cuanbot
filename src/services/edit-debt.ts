@@ -1,6 +1,7 @@
 import {
   findActiveDebtByPerson,
-  updateDebtRemaining,
+  settleDebt,
+  updateDebtAmountAndRemaining,
 } from "../db/repository";
 import { validateAmount } from "../utils/validator";
 import { formatRupiah } from "../utils/formatter";
@@ -29,12 +30,7 @@ export async function editDebt(
 
   if (args.action === "delete") {
     // Soft delete: set status = settled
-    await db
-      .prepare(
-        `UPDATE debts SET status = 'settled', settled_at = unixepoch() WHERE id = ?`
-      )
-      .bind(debt.id)
-      .run();
+    await settleDebt(db, debt.id);
 
     return {
       type: "edited",
@@ -57,10 +53,7 @@ export async function editDebt(
     const diff = newAmount - debt.amount;
     const newRemaining = Math.max(0, debt.remaining + diff);
 
-    await db
-      .prepare(`UPDATE debts SET amount = ?, remaining = ? WHERE id = ?`)
-      .bind(newAmount, newRemaining, debt.id)
-      .run();
+    await updateDebtAmountAndRemaining(db, debt.id, newAmount, newRemaining);
 
     return {
       type: "edited",

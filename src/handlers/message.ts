@@ -10,10 +10,6 @@ import { formatReply } from "../utils/formatter";
  * In-memory set to track recently processed Telegram message IDs.
  * Prevents duplicate processing when Telegram retries webhook
  * after timeout (Worker processed the message but ctx.reply() timed out).
- *
- * Note: This is per-isolate, not global. But sufficient because
- * Telegram retries hit the same worker within seconds.
- * Max 1000 entries with auto-cleanup to prevent memory leak.
  */
 const processedMessages = new Set<string>();
 const MAX_PROCESSED_CACHE = 1000;
@@ -25,7 +21,6 @@ function getMessageKey(chatId: number | undefined, messageId: number | undefined
 
 function cleanupProcessedCache(): void {
   if (processedMessages.size > MAX_PROCESSED_CACHE) {
-    // Remove oldest half
     const entries = Array.from(processedMessages);
     const removeCount = Math.floor(entries.length / 2);
     for (let i = 0; i < removeCount; i++) {
@@ -33,6 +28,25 @@ function cleanupProcessedCache(): void {
     }
     console.log(`[Dedup] Cleaned cache: removed ${removeCount}, remaining ${processedMessages.size}`);
   }
+}
+
+/**
+ * Build a tool context string to save in conversation history.
+ * This helps the AI understand what tools were used previously,
+ * so "yang terakhir salah" references the correct tool.
+ */
+function buildToolContext(toolCalls: Array<{ name: string; arguments: any }>): string {
+  if (toolCalls.length === 0) return "";
+
+  const parts = toolCalls.map((tc) => {
+    // Include key info only — not full args dump
+    const argSummary = Object.entries(tc.arguments)
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(", ");
+    return `${tc.name}(${argSummary})`;
+  });
+
+  return `[tools_used: ${parts.join("; ")}]\n`;
 }
 
 export async function handleMessage(
@@ -44,8 +58,7 @@ export async function handleMessage(
   if (!text || !ctx.from) return;
 
   // ============================================
-  // IDEMPOTENCY GUARD: Skip duplicate webhook calls
-  // Telegram retries when our response is slow (>10s)
+  // IDEMPOTENCY GUARD
   // ============================================
   const messageKey = getMessageKey(ctx.chat?.id, ctx.message?.message_id);
   if (messageKey) {
@@ -64,20 +77,20 @@ export async function handleMessage(
     // 1. Get or create user
     const user = await getOrCreateUser(env.DB, telegramId, displayName);
 
-    // 2. Ambil 6 chat terakhir sebagai konteks
+    // 2. Get recent conversation (6 messages) for context
     const history = await getRecentConversation(env.DB, user.id, 6);
     const conversationHistory = history.map((h: any) => ({
       role: h.role as "user" | "assistant",
       content: h.content,
     }));
 
-    // 3. Simpan pesan user
+    // 3. Save user message
     await saveConversation(env.DB, user.id, "user", text);
 
-    // 4. Kirim ke AI engine
+    // 4. Run AI engine
     const aiResult = await runAI(env, user.id, text, conversationHistory);
 
-    // 5. Proses tool calls
+    // 5. Process tool calls
     const results = await processToolCalls(
       env.DB,
       user,
@@ -88,21 +101,23 @@ export async function handleMessage(
     // 6. Format reply
     const reply = formatReply(results, aiResult.textResponse);
 
-    // 7. Kirim reply (guard: jangan kirim jika kosong)
+    // 7. Send reply
     if (reply && reply.trim().length > 0) {
       await ctx.reply(reply, { parse_mode: "HTML" });
 
-      // 8. Simpan reply bot
-      await saveConversation(env.DB, user.id, "assistant", reply);
+      // 8. Save bot reply WITH tool context
+      // This helps AI understand previous actions for edit/delete commands
+      const toolContext = buildToolContext(aiResult.toolCalls);
+      await saveConversation(env.DB, user.id, "assistant", `${toolContext}${reply}`);
     } else {
       console.warn("[Bot] Empty reply, skipping sendMessage");
     }
   } catch (error) {
     console.error("[Bot] Handler error:", error);
     try {
-      await ctx.reply("\u26a0\ufe0f Waduh, ada error nih. Coba lagi ya.");
+      await ctx.reply("⚠️ Waduh, ada error nih. Coba lagi ya.");
     } catch (_) {
-      // Jika bahkan error reply gagal, abaikan
+      // If even error reply fails, ignore
     }
   }
 }

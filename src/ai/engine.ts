@@ -17,7 +17,7 @@ export interface ConversationMessage {
 
 // Dual model constants
 const QWEN_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"; // NLU: understands Indonesian slang
-const LLAMA_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"; // FC: reliable function calling
+const LLAMA_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"; // FC: reliable function calling (MoE 17B, 16 experts)
 
 /**
  * Strip <think>...</think> tags from Qwen's thinking mode

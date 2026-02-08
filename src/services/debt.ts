@@ -1,6 +1,7 @@
 import {
   insertDebt,
   findActiveDebtByPerson,
+  findDebtByPersonAllStatus,
   updateDebtRemaining,
   updateDebtNextPayment,
   insertDebtPayment,
@@ -372,12 +373,20 @@ export async function getDebtHistory(
   user: User,
   args: { person_name: string }
 ): Promise<ToolCallResult> {
-  const debt = await findActiveDebtByPerson(db, user.id, args.person_name);
+  // First try active debt
+  let debt = await findActiveDebtByPerson(db, user.id, args.person_name);
+
+  // If no active debt, try ALL statuses (including settled)
+  // so user can still see payment history of paid-off debts
+  if (!debt) {
+    debt = await findDebtByPersonAllStatus(db, user.id, args.person_name) as any;
+  }
+
   if (!debt) {
     return {
       type: "clarification",
       data: null,
-      message: `Tidak ditemukan hutang aktif ke "${args.person_name}".`,
+      message: `Tidak ditemukan hutang/piutang ke "${args.person_name}".`,
     };
   }
 
@@ -399,6 +408,7 @@ export async function getDebtHistory(
       next_payment_date: debt.next_payment_date,
       installment_amount: debt.installment_amount,
       payments: payments.results,
+      status: (debt as any).status || "active",
     },
   };
 }

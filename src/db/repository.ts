@@ -115,6 +115,41 @@ export async function findActiveDebtByPerson(
     }>();
 }
 
+/**
+ * Find debt by person name across ALL statuses (active + settled).
+ * Used for debt history lookups — user should be able to see
+ * payment history even after a debt is fully paid.
+ */
+export async function findDebtByPersonAllStatus(
+  db: D1Database,
+  userId: number,
+  personName: string
+) {
+  return db
+    .prepare(
+      `SELECT * FROM debts 
+       WHERE user_id = ? AND person_name = ? COLLATE NOCASE
+       ORDER BY created_at DESC LIMIT 1`
+    )
+    .bind(userId, personName)
+    .first<{
+      id: number;
+      type: string;
+      person_name: string;
+      remaining: number;
+      amount: number;
+      status: string;
+      due_date: string | null;
+      interest_rate: number;
+      interest_type: string;
+      tenor_months: number | null;
+      installment_amount: number | null;
+      installment_freq: string;
+      next_payment_date: string | null;
+      total_with_interest: number | null;
+    }>();
+}
+
 export async function updateDebtRemaining(
   db: D1Database,
   debtId: number,

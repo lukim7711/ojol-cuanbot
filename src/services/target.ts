@@ -195,12 +195,40 @@ export async function setSaving(
   return { type: "saving_set" as any, data: { daily_saving: amount } };
 }
 
+/**
+ * Tokenize obligation name and try fuzzy match.
+ * E.g. "kewajiban gopay" → tries "kewajiban gopay", "kewajiban", "gopay"
+ */
+async function findObligationFuzzy(
+  db: D1Database,
+  userId: number,
+  name: string
+): Promise<{ id: number; name: string; amount: number; frequency: string } | null> {
+  // 1. Try exact LIKE match first (existing behavior)
+  const exact = await findObligationByName(db, userId, name);
+  if (exact) return exact;
+
+  // 2. Tokenize and try each word
+  const tokens = name
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3) // skip tiny words like "ke", "di"
+    .filter((t) => !["kewajiban", "cicilan", "bayar", "hapus", "selesai", "done"].includes(t)); // skip generic verbs
+
+  for (const token of tokens) {
+    const found = await findObligationByName(db, userId, token);
+    if (found) return found;
+  }
+
+  return null;
+}
+
 export async function editObligation(
   db: D1Database,
   user: User,
   args: { action: string; name: string }
 ): Promise<ToolCallResult> {
-  const obl = await findObligationByName(db, user.id, args.name);
+  const obl = await findObligationFuzzy(db, user.id, args.name);
   if (!obl) {
     return { type: "clarification", data: null, message: `Kewajiban "${args.name}" tidak ditemukan. Cek lagi ya bos.` };
   }
@@ -213,12 +241,37 @@ export async function editObligation(
   return { type: "clarification", data: null, message: "Aksi tidak dikenal." };
 }
 
+/**
+ * Tokenize goal name and try fuzzy match.
+ */
+async function findGoalFuzzy(
+  db: D1Database,
+  userId: number,
+  name: string
+): Promise<{ id: number; name: string; target_amount: number; saved_amount: number; deadline_days: number | null } | null> {
+  const exact = await findGoalByName(db, userId, name);
+  if (exact) return exact;
+
+  const tokens = name
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length >= 3)
+    .filter((t) => !["goal", "target", "batal", "batalkan", "hapus", "cancel"].includes(t));
+
+  for (const token of tokens) {
+    const found = await findGoalByName(db, userId, token);
+    if (found) return found;
+  }
+
+  return null;
+}
+
 export async function editGoal(
   db: D1Database,
   user: User,
   args: { action: string; name: string }
 ): Promise<ToolCallResult> {
-  const goal = await findGoalByName(db, user.id, args.name);
+  const goal = await findGoalFuzzy(db, user.id, args.name);
   if (!goal) {
     return { type: "clarification", data: null, message: `Goal "${args.name}" tidak ditemukan. Cek lagi ya bos.` };
   }

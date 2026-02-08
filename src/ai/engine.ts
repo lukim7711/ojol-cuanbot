@@ -67,7 +67,7 @@ function getWIBDateString(): string {
 /**
  * Detect if AI response text looks like a financial confirmation
  * without having made any tool calls (hallucination).
- * Covers: transactions, debt recording, debt payments.
+ * Covers: transactions, debt recording, debt payments, edits, deletes.
  */
 export function detectHallucinatedResponse(text: string | null): boolean {
   if (!text) return false;
@@ -86,6 +86,18 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /sisa\s*(hutang)?\s*:?\s*rp/i,
     /bayar.*hutang.*rp/i,
     /pembayaran.*berhasil/i,
+    // NEW: Edit/delete/cancel hallucination patterns
+    /dihapus/i,
+    /diubah/i,
+    /dibatalkan/i,
+    /diedit/i,
+    /sudah\s+(di)?hapus/i,
+    /sudah\s+(di)?ubah/i,
+    /sudah\s+(di)?batalkan/i,
+    /berhasil\s+(di)?hapus/i,
+    /berhasil\s+(di)?ubah/i,
+    /berhasil\s+(di)?edit/i,
+    /berhasil\s+(di)?batalkan/i,
   ];
 
   const hasConfirmation = confirmPatterns.some((p) => p.test(text));
@@ -102,6 +114,11 @@ export function detectHallucinatedResponse(text: string | null): boolean {
     /hutang/i,
     /piutang/i,
     /sisa/i,
+    // NEW: Edit/delete context indicators — even without Rp amount
+    /transaksi/i,
+    /kewajiban/i,
+    /goal/i,
+    /cicilan/i,
   ];
 
   return financialPatterns.some((p) => p.test(text));
@@ -131,6 +148,7 @@ export function looksLikeFinancialInput(text: string): boolean {
     /cicilan/i, /kontrakan/i, /nabung/i,
     /salah/i, /harusnya/i, /ubah/i, /ganti/i, /edit/i,
     /hapus/i, /delete/i, /batal/i,
+    /minus/i, /rugi/i, /untung/i,
   ];
 
   return financialKeywords.some((p) => p.test(text));
@@ -141,8 +159,6 @@ export function looksLikeFinancialInput(text: string): boolean {
  * but does NOT contain numbers (e.g. "daftar piutang", "riwayat hutang Budi").
  */
 export function looksLikeActionQuery(text: string): boolean {
-  const lower = text.toLowerCase();
-
   const actionPatterns = [
     // Debt queries
     /daftar\s+(hutang|piutang|semua)/i,
@@ -158,10 +174,12 @@ export function looksLikeActionQuery(text: string): boolean {
     /rekap/i,
     /\/(rekap|summary)/i,
     // Edit/delete without numbers
-    /hapus\s+(hutang|piutang|yang)/i,
-    /batal\s+(goal|hutang|piutang|cicilan)/i,
+    /hapus\s+(hutang|piutang|yang|transaksi|kewajiban|goal)/i,
+    /batal(kan)?\s+(goal|hutang|piutang|cicilan|kewajiban)/i,
     /hapus\s+cicilan/i,
     /done\s+cicilan/i,
+    /kewajiban.*selesai/i,
+    /selesai.*kewajiban/i,
   ];
 
   return actionPatterns.some((p) => p.test(text));
@@ -282,8 +300,8 @@ export async function runAI(
 
     // Build retry instruction based on type
     const retryInstruction = isHallucination
-      ? `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, dll). DILARANG membalas dengan teks saja.]`
-      : `[INSTRUKSI SISTEM: Pesan berikut MEMBUTUHKAN tool call. Analisis ulang dan panggil tool yang sesuai. Jika ada angka + konteks keuangan \u2192 record_transactions/record_debt/pay_debt. Jika query hutang/piutang \u2192 get_debts/get_debt_history. Jika query target \u2192 get_daily_target. Jika edit/hapus \u2192 edit_transaction/edit_debt. DILARANG membalas dengan teks saja.]`;
+      ? `[INSTRUKSI SISTEM: Pesan berikut MENGANDUNG data keuangan. Kamu WAJIB memanggil tool yang sesuai (record_transactions, record_debt, pay_debt, edit_transaction, edit_debt, edit_obligation, edit_goal, dll). DILARANG membalas dengan teks saja. Jika user minta hapus/ubah/batalkan, panggil tool edit yang sesuai.]`
+      : `[INSTRUKSI SISTEM: Pesan berikut MEMBUTUHKAN tool call. Analisis ulang dan panggil tool yang sesuai. Jika ada angka + konteks keuangan → record_transactions/record_debt/pay_debt. Jika query hutang/piutang → get_debts/get_debt_history. Jika query target → get_daily_target. Jika edit/hapus → edit_transaction/edit_debt. Jika kewajiban selesai/hapus → edit_obligation. Jika goal batal → edit_goal. DILARANG membalas dengan teks saja.]`;
 
     const retryMessages = [
       { role: "system" as const, content: buildSystemPrompt(currentDate) },
@@ -316,7 +334,7 @@ export async function runAI(
       if (isHallucination) {
         // Nullify the hallucinated text to prevent false confirmation
         result.textResponse =
-          "\u26a0\ufe0f Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
+          "⚠️ Maaf, gue gagal proses data lo. Coba kirim ulang ya bos.";
       }
       // For shouldRetry (non-hallucination), keep original text response
       // as it might be a legitimate clarification from AI

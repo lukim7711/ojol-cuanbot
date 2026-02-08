@@ -32,7 +32,7 @@ Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup de
 | Database | Cloudflare D1 (SQLite) | Binding: `DB`, name: `cuanbot-db` |
 | Language | TypeScript strict | tsconfig strict mode |
 | Testing | Vitest + @cloudflare/vitest-pool-workers | Workers-compatible test runner |
-| CI/CD | GitHub Actions | CI: test on push/PR; CD: auto deploy on push to main |
+| CI/CD | GitHub Actions | CI: test on push/PR; CD: auto migrate D1 + deploy on push to main |
 | Config | wrangler.jsonc | compatibility_date: 2026-02-05 |
 
 ### Environment & Secrets
@@ -41,6 +41,8 @@ Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup de
 - `TELEGRAM_BOT_TOKEN` — secret
 - `AI_API_KEY` — secret
 - `BOT_INFO` — JSON string di vars
+- `CLOUDFLARE_API_TOKEN` — GitHub Actions secret (for deploy & migration)
+- `CLOUDFLARE_ACCOUNT_ID` — GitHub Actions secret
 
 ---
 
@@ -81,6 +83,14 @@ Telegram → Webhook → Cloudflare Worker
 6. Router mengeksekusi tool call → service → repository → D1
 7. Result diformat oleh `formatter.ts` → dikirim balik ke user
 
+### CD Pipeline Flow:
+```
+push to main → Run Tests → Apply D1 Migrations (--remote) → Deploy Worker
+```
+- Migration idempotent (D1 tracks via `d1_migrations` table)
+- Jika migration gagal → deploy diskip (fail-fast)
+- Jika tidak ada migration baru → no-op
+
 ---
 
 ## 4. Struktur Folder
@@ -97,7 +107,7 @@ ojol-cuanbot/
 │   ├── config/
 │   │   └── env.ts            # Env type definitions
 │   ├── db/
-│   │   ├── repository.ts     # Core queries (users, transactions, debts, conversation)
+│   │   ├── repository.ts     # All DB queries: users, transactions, debts, conversation, edit/delete lookups
 │   │   └── repository-target.ts  # Target queries (obligations, goals, settings)
 │   ├── handlers/
 │   │   ├── start.ts          # /start command handler (onboarding)
@@ -106,8 +116,8 @@ ojol-cuanbot/
 │   │   ├── router.ts         # Tool call dispatcher
 │   │   ├── transaction.ts    # Income/expense recording
 │   │   ├── debt.ts           # Hutang: record, pay, list, history, interest, overdue
-│   │   ├── edit.ts           # Edit/delete transactions (multi-layer search)
-│   │   ├── edit-debt.ts      # Edit/delete debts
+│   │   ├── edit.ts           # Edit/delete transactions (multi-layer search via repository)
+│   │   ├── edit-debt.ts      # Edit/delete debts (via repository)
 │   │   ├── summary.ts        # Rekap: today, yesterday, this_week, this_month
 │   │   ├── target.ts         # Smart daily target calculation
 │   │   └── user.ts           # Get or create user
@@ -130,7 +140,7 @@ ojol-cuanbot/
 │   │   └── engine.spec.ts    # AI engine tests (10 tests)
 │   ├── services/
 │   │   ├── transaction.spec.ts  # Transaction recording tests (15 tests)
-│   │   ├── edit.spec.ts         # Edit/delete transaction tests (10 tests)
+│   │   ├── edit.spec.ts         # Edit/delete transaction tests (13 tests)
 │   │   ├── edit-debt.spec.ts    # Edit/delete debt tests (8 tests)
 │   │   ├── summary.spec.ts      # Summary/rekap tests (7 tests)
 │   │   ├── user.spec.ts         # User service tests (5 tests)
@@ -143,7 +153,7 @@ ojol-cuanbot/
 │       └── formatter.spec.ts    # formatRupiah + formatReply (19 tests)
 ├── .github/workflows/
 │   ├── ci.yml                # CI: test on push/PR to main
-│   └── deploy.yml            # CD: auto deploy on push to main
+│   └── deploy.yml            # CD: test → migrate D1 → deploy (on push to main)
 ├── wrangler.jsonc
 ├── package.json
 ├── tsconfig.json
@@ -316,11 +326,12 @@ CREATE TABLE user_settings (
 - Service: `src/services/summary.ts`
 
 #### 6.5 Edit & Hapus
-- Edit transaksi: multi-layer search (description, category, source_text, last)
+- Edit transaksi: multi-layer search via repository (description, category, source_text, last)
 - Hapus transaksi
-- Edit hutang (adjust remaining proportionally)
-- Hapus hutang (soft delete: set status = settled)
+- Edit hutang (adjust remaining proportionally) via repository
+- Hapus hutang (soft delete via `settleDebt()`) via repository
 - Service: `src/services/edit.ts`, `src/services/edit-debt.ts`
+- **All SQL in repository layer** (no direct db.prepare in services)
 
 #### 6.6 /start Command
 - Onboarding flow untuk user baru
@@ -335,9 +346,14 @@ CREATE TABLE user_settings (
 - Malformed JSON fallback (regex extraction)
 - Engine: `src/ai/engine.ts`
 
-#### 6.8 CI/CD
+#### 6.8 CI/CD (Zero Terminal Lokal)
 - **CI**: GitHub Actions — test on push/PR to main (`.github/workflows/ci.yml`)
-- **CD**: GitHub Actions — auto deploy to Cloudflare Workers on push to main (`.github/workflows/deploy.yml`)
+- **CD**: GitHub Actions — on push to main (`.github/workflows/deploy.yml`):
+  1. Run tests
+  2. Apply D1 migrations (`wrangler d1 migrations apply cuanbot-db --remote`)
+  3. Deploy Worker to Cloudflare
+- **Migration otomatis**: Idempotent, fail-fast, no-op jika tidak ada migration baru
+- **Tidak perlu terminal lokal** untuk workflow apapun
 
 ### 🔲 PLANNED (Roadmap)
 
@@ -380,11 +396,20 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 ## 8. Coding Conventions
 
 ### Pattern yang digunakan:
-- **Repository pattern**: DB queries di `src/db/repository.ts` dan `repository-target.ts`
+- **Repository pattern**: Semua DB queries di `src/db/repository.ts` dan `repository-target.ts` — **tidak ada direct SQL di service layer**
 - **Service layer**: Business logic di `src/services/*.ts`
 - **Router pattern**: Tool call dispatch di `src/services/router.ts`
 - **Formatter**: Semua response formatting di `src/utils/formatter.ts` (Telegram HTML)
 - **ToolCallResult**: Semua service return `{ type, data, message? }`
+
+### Repository exports (edit/delete related):
+- `FoundTransaction` — exported interface for transaction lookup results
+- `findTransactionByDescription()` — Layer 1: LIKE match on description
+- `findTransactionByCategory()` — Layer 2: exact match on category name
+- `findTransactionBySourceText()` — Layer 3: LIKE match on source_text
+- `findLastTransaction()` — Layer 4: fallback to most recent transaction
+- `settleDebt()` — soft delete debt (set status = settled)
+- `updateDebtAmountAndRemaining()` — update debt amount + remaining
 
 ### Konvensi:
 - Amount selalu dalam INTEGER (Rupiah penuh, bukan desimal)
@@ -398,6 +423,7 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 - `main` — production, auto-deploy
 - `feat/*` — fitur baru
 - `hotfix/*` — perbaikan cepat
+- `refactor/*` — refactoring tanpa ubah behavior
 - Merge method: squash merge
 
 ---
@@ -436,6 +462,12 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 - Disimpan di D1, di-load per user saat request
 - Dibatasi 6 pesan terakhir untuk hemat token
 
+### Kenapa auto-migration di CD?
+- Zero terminal lokal — developer tidak perlu buka terminal sama sekali
+- Idempotent — D1 track applied migrations, aman dijalankan berulang
+- Fail-fast — migration gagal = deploy diskip
+- Urutan benar — schema update dulu, baru code deploy
+
 ---
 
 ## 10. Known Issues & Quirks
@@ -445,7 +477,6 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | Qwen3 `<think>` tags | Model kadang wrap arguments dalam `<think>...</think>` | `engine.ts` strips tags before JSON.parse |
 | Empty reply | Jika AI return tool calls tanpa text, formatter bisa return empty string | `formatter.ts` has "Diproses!" fallback |
 | BOT_INFO must be valid JSON | `wrangler.jsonc` vars `BOT_INFO` harus valid JSON string | Set via `npx wrangler secret put` atau update vars |
-| D1 migration manual | Migrations tidak auto-run, harus manual via wrangler CLI | `npx wrangler d1 migrations apply cuanbot-db` |
 | router.spec.ts stderr | `[Target] Failed to calculate progress: db.prepare is not a function` — expected because mockDB = {} | Not a real error, target calc is try/catch in source |
 
 ---
@@ -462,12 +493,12 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | `test/services/transaction.spec.ts` | 15 | Recording, validation, skip invalid, date offset, category lookup, sanitization |
 | `test/services/debt.spec.ts` | ~12 | Interest calc, overdue detection, next payment, debt history |
 | `test/services/target.spec.ts` | varies | Smart target calculation |
-| `test/services/edit.spec.ts` | 10 | Delete, edit, not found, invalid amount, unknown action, edge cases |
-| `test/services/edit-debt.spec.ts` | 8 | Soft delete, edit amount, remaining adjustment, clamp to 0, not found |
+| `test/services/edit.spec.ts` | 13 | Delete, edit, not found, unknown action, resolveTarget layers 1-4 |
+| `test/services/edit-debt.spec.ts` | 8 | Soft delete via settleDebt, edit amount, remaining adjustment, clamp to 0 |
 | `test/services/summary.spec.ts` | 7 | Totals calculation, period labels, custom range, empty period |
 | `test/services/user.spec.ts` | 5 | Get existing, create new, throw on failure, argument passing |
 | `test/ai/engine.spec.ts` | 10 | OpenAI format, legacy format, text extraction, think strip, malformed JSON, multi tool calls |
-| **Total** | **~131+** | **All pass** |
+| **Total** | **~134+** | **All pass** |
 
 ---
 
@@ -488,7 +519,9 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | 2026-02-07 | AI response fix | Fix empty reply, robust parsing, `<think>` tag strip (PR #3, #4) |
 | 2026-02-07 | Smart debt deploy | Migration 0003, full smart debt features (PR #10) |
 | 2026-02-08 | Tahap 1 cleanup | Remove stubs, add transaction test, rewrite AI_CONTEXT.md (PR #12) |
-| 2026-02-08 | Tahap 2 hardening | Add 5 test files (edit, edit-debt, summary, user, engine) — ~40 new tests |
+| 2026-02-08 | Tahap 2 hardening | Add 5 test files (edit, edit-debt, summary, user, engine) — ~40 new tests (PR #13) |
+| 2026-02-08 | Refactor repository | Extract direct SQL from edit.ts & edit-debt.ts to repository layer (PR #14) |
+| 2026-02-08 | Auto-migration CD | Add D1 migration step in deploy.yml — zero terminal lokal (PR #15) |
 
 ---
 
@@ -497,7 +530,7 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 ### Ketika diminta MENAMBAH FITUR BARU:
 1. Baca section 6 (fitur) untuk cek apakah sudah ada
 2. Buat branch `feat/<nama-fitur>` dari `main`
-3. Jika butuh schema baru → buat migration file `migrations/0004_*.sql` dst
+3. Jika butuh schema baru → buat migration file `migrations/0004_*.sql` dst (akan auto-apply saat CD)
 4. Implementasi: repository → service → tools → prompt → formatter → router
 5. Tambah test jika logic complex
 6. Push, buat PR, tunggu CI pass
@@ -514,10 +547,11 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 1. Buat branch `refactor/<scope>`
 2. Jangan ubah behavior, hanya struktur
 3. Pastikan test masih pass
+4. Update AI_CONTEXT.md jika ada perubahan signifikan
 
 ### Urutan file yang perlu diubah saat tambah fitur:
 ```
-1. migrations/0004_xxx.sql        (jika butuh table/column baru)
+1. migrations/0004_xxx.sql        (jika butuh table/column baru — auto-apply via CD)
 2. src/db/repository.ts           (query baru)
 3. src/services/<feature>.ts      (business logic)
 4. src/ai/tools.ts                (tool definition baru)
@@ -541,4 +575,4 @@ AI akan membaca file ini dan langsung punya konteks lengkap tanpa perlu mengulan
 
 ---
 
-*Last updated: 2026-02-08 — Tahap 2 test hardening*
+*Last updated: 2026-02-08 — Auto-migration CD + repository refactor*

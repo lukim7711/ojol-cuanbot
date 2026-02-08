@@ -37,15 +37,31 @@ HARI INI: ${currentDate}
 - "X bayar" / "X nyicil" = pembayaran hutang/piutang dari X
 - "bayar hutang X" = user membayar hutang ke X
 
-== ATURAN EDIT/KOREKSI ==
-- "yang terakhir salah" → koreksi item terakhir yang dicatat
-- "yang X tadi hapus" → hapus item X
-- "harusnya" → ubah ke nilai yang disebutkan
-- PENTING: Pertahankan konteks apa yang diedit (transaksi vs hutang/piutang)
+== ATURAN EDIT/HAPUS (SANGAT PENTING) ==
+Saat user ingin EDIT atau HAPUS transaksi:
+- WAJIB pertahankan NAMA ITEM / KATEGORI yang disebutkan user
+- WAJIB pertahankan JUMLAH LAMA jika user menyebutkannya
+- Format edit: "ubah transaksi [ITEM] Rp[LAMA] menjadi Rp[BARU]"
+- Format hapus: "hapus transaksi [ITEM]"
+- JANGAN ganti nama item dengan kata umum seperti "data terakhir"
+
+Contoh BENAR:
+- "yang bensin 30rb ubah jadi 35rb" → "ubah transaksi bensin Rp30.000 menjadi Rp35.000"
+- "makan tadi hapus" → "hapus transaksi makan"
+- "yang rokok goceng hapus" → "hapus transaksi rokok Rp5.000"
+- "ubah bensin jadi 40rb" → "ubah transaksi bensin menjadi Rp40.000"
+
+Contoh SALAH (JANGAN seperti ini):
+- "yang bensin 30rb ubah jadi 35rb" → "koreksi data terakhir, ubah menjadi Rp35.000" ← SALAH! Hilang "bensin" dan "Rp30.000"
+
+== ATURAN KOREKSI NON-SPESIFIK ==
+Jika user TIDAK menyebut nama item spesifik:
+- "yang terakhir salah, harusnya 250rb" → "koreksi data terakhir, ubah jumlah menjadi Rp250.000"
+- Di sini boleh pakai "data terakhir" karena user memang merujuk item terakhir
 
 == ATURAN QUERY ==
 - "daftar hutang" / "cek hutang" → lihat daftar semua hutang dan piutang aktif
-- "daftar piutang" → lihat daftar piutang aktif
+- "daftar piutang" → lihat daftar piutang aktif saja
 - "rekap" / "rekap hari ini" → lihat rekap keuangan hari ini
 - "rekap kemarin" → lihat rekap kemarin
 - "rekap minggu ini" → lihat rekap minggu ini
@@ -88,14 +104,23 @@ Output: pembayaran dari Andi sebesar Rp100.000
 Input: "daftar hutang"
 Output: lihat daftar semua hutang dan piutang aktif
 
+Input: "daftar piutang"
+Output: lihat daftar piutang aktif saja
+
 Input: "rekap hari ini"
 Output: lihat rekap keuangan hari ini
 
 Input: "yang terakhir salah, harusnya 250rb"
 Output: koreksi data terakhir, ubah jumlah menjadi Rp250.000
 
+Input: "yang bensin 30rb ubah jadi 35rb"
+Output: ubah transaksi bensin Rp30.000 menjadi Rp35.000
+
 Input: "hapus yang bensin"
 Output: hapus transaksi bensin
+
+Input: "yang rokok tadi hapus aja"
+Output: hapus transaksi rokok
 
 Input: "target gue berapa?"
 Output: lihat target harian
@@ -116,7 +141,8 @@ PENTING:
 - Jangan tambahkan informasi yang TIDAK ada di pesan asli
 - Jangan jawab/proses — HANYA terjemahkan
 - Jika pesan sudah jelas (angka eksplisit), tulis ulang apa adanya
-- SELALU konversi slang angka ke Rupiah eksplisit`;
+- SELALU konversi slang angka ke Rupiah eksplisit
+- WAJIB pertahankan nama item/kategori saat edit/hapus — JANGAN generalisasi`;
 }
 
 /**
@@ -154,9 +180,14 @@ Pembayaran:
 - "pembayaran dari X sebesar RpY" → pay_debt: {person_name:"X", amount:Y}
 - "bayar hutang ke X sebesar RpY" → pay_debt: {person_name:"X", amount:Y}
 
-Query:
+Query Hutang/Piutang (PERHATIKAN MAPPING TYPE):
 - "lihat daftar semua hutang dan piutang aktif" → get_debts: {type:"all"}
-- "lihat daftar piutang aktif" → get_debts: {type:"piutang"}
+- "lihat daftar hutang aktif saja" → get_debts: {type:"hutang"}
+- "lihat daftar piutang aktif saja" → get_debts: {type:"piutang"}
+- PENTING: "piutang" = type:"piutang", "hutang" = type:"hutang", keduanya = type:"all"
+- JANGAN campur! "daftar piutang" → type:"piutang" (BUKAN "hutang")
+
+Query Keuangan:
 - "lihat rekap keuangan hari ini" → get_summary: {period:"today"}
 - "lihat rekap kemarin" → get_summary: {period:"yesterday"}
 - "lihat rekap minggu ini" → get_summary: {period:"this_week"}
@@ -164,18 +195,21 @@ Query:
 - "lihat target harian" → get_daily_target
 - "lihat riwayat pembayaran hutang X" → get_debt_history: {person_name:"X"}
 
-Edit/Hapus:
+Edit/Hapus Transaksi:
+- "ubah transaksi X RpLAMA menjadi RpBARU" → edit_transaction: {action:"edit", target:"X", new_amount:BARU}
+  - target = NAMA ITEM saja (contoh: "bensin", "makan"), TANPA prefix "yang"
+- "hapus transaksi X" → edit_transaction: {action:"delete", target:"X"}
+  - target = NAMA ITEM saja (contoh: "rokok", "bensin"), TANPA prefix "yang" atau "transaksi"
 - "koreksi data terakhir, ubah jumlah menjadi RpY" → Lihat context [Pesan asli] + percakapan sebelumnya:
   - Jika terakhir = hutang/piutang → edit_debt: {action:"edit", person_name:"...", new_amount:Y}
-  - Jika terakhir = transaksi → edit_transaction: {action:"edit", target:"...", new_amount:Y}
-- "hapus transaksi X" → edit_transaction: {action:"delete", target:"X"}
+  - Jika terakhir = transaksi → edit_transaction: {action:"edit", target:"last", new_amount:Y}
 
 Target:
 - "set kewajiban X RpY per Z" → set_obligation: {name:"X", amount:Y, frequency:"Z"}
 - "set goal X RpY deadline N hari" → set_goal: {name:"X", target_amount:Y, deadline_days:N}
 - "set tabungan harian minimal RpY" → set_saving: {amount:Y}
-- "hapus kewajiban X" → edit_obligation: {action:"done", name:"X"}
-- "batal goal X" → edit_goal: {action:"cancel", name:"X"}
+- "hapus kewajiban X" / "kewajiban X udah dibayar" → edit_obligation: {action:"done", name:"X"}
+- "batal goal X" / "hapus goal X" → edit_goal: {action:"cancel", name:"X"}
 
 Reset:
 - "reset semua data" → panggil ask_clarification: {message:"reset"}
@@ -183,6 +217,12 @@ Reset:
 == ATURAN KATEGORI ==
 Income: orderan, bonus, tip, gaji, lainnya
 Expense: makan, bensin, rokok, parkir, servis, pulsa, lainnya
+
+== ATURAN TARGET edit_transaction ==
+- field "target" harus berisi NAMA ITEM BERSIH: "bensin", "makan", "rokok"
+- JANGAN tambahkan prefix: "yang bensin" ❌, "transaksi bensin" ❌
+- BENAR: "bensin" ✅, "makan" ✅, "rokok" ✅
+- Jika input "ubah transaksi bensin Rp30.000 menjadi Rp35.000" → target: "bensin", new_amount: 35000
 
 == PERILAKU ==
 - Satu pesan banyak transaksi → record_transactions SEKALI dengan array (max 10 items)

@@ -28,11 +28,11 @@ Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup de
 |-------|-----------|--------|
 | Runtime | Cloudflare Workers | Serverless, edge-deployed, entry: `src/index.ts` |
 | Bot Framework | grammY v1.39+ | TypeScript-first, webhook mode |
-| AI/NLP | Workers AI | OpenAI-compatible, function calling (tool_use) |
+| AI/NLP | Workers AI (Qwen3-30B-A3B) | OpenAI-compatible, function calling (tool_use) |
 | Database | Cloudflare D1 (SQLite) | Binding: `DB`, name: `cuanbot-db` |
 | Language | TypeScript strict | tsconfig strict mode |
 | Testing | Vitest + @cloudflare/vitest-pool-workers | Workers-compatible test runner |
-| CI/CD | GitHub Actions | Auto deploy on push to main |
+| CI/CD | GitHub Actions | CI: test on push/PR; CD: auto deploy on push to main |
 | Config | wrangler.jsonc | compatibility_date: 2026-02-05 |
 
 ### Environment & Secrets
@@ -53,10 +53,10 @@ Telegram → Webhook → Cloudflare Worker
                          |
                   Message Handler
                          |
-                    AI Engine (Workers AI)
+                    AI Engine (src/ai/engine.ts)
                     - System prompt (src/ai/prompt.ts)
                     - Tool definitions (src/ai/tools.ts)
-                    - Function calling
+                    - Function calling + <think> tag stripping
                          |
                     Service Router (src/services/router.ts)
                     ├── transaction.ts  → record/get transactions
@@ -64,7 +64,8 @@ Telegram → Webhook → Cloudflare Worker
                     ├── edit.ts         → edit/delete transactions
                     ├── edit-debt.ts    → edit/delete debts
                     ├── summary.ts      → rekap keuangan
-                    └── target.ts       → smart daily target
+                    ├── target.ts       → smart daily target
+                    └── user.ts         → get/create user
                          |
                     Repository Layer (src/db/repository.ts, repository-target.ts)
                          |
@@ -74,10 +75,11 @@ Telegram → Webhook → Cloudflare Worker
 ### Flow per message:
 1. User kirim chat di Telegram
 2. grammY menerima via webhook
-3. Message handler kirim ke AI dengan system prompt + conversation history
-4. AI memutuskan tool call mana yang dipanggil (atau balas natural)
-5. Router mengeksekusi tool call → service → repository → D1
-6. Result diformat oleh `formatter.ts` → dikirim balik ke user
+3. `/start` → handler `start.ts` (onboarding); pesan biasa → `message.ts`
+4. Message handler kirim ke AI Engine dengan system prompt + conversation history
+5. AI Engine memanggil Workers AI, parse response (strip `<think>` tags dari Qwen3), extract tool calls
+6. Router mengeksekusi tool call → service → repository → D1
+7. Result diformat oleh `formatter.ts` → dikirim balik ke user
 
 ---
 
@@ -86,18 +88,20 @@ Telegram → Webhook → Cloudflare Worker
 ```
 ojol-cuanbot/
 ├── src/
-│   ├── index.ts              # CF Worker entry, webhook route
+│   ├── index.ts              # CF Worker entry, webhook route, health check
 │   ├── bot.ts                # grammY bot instance setup
 │   ├── ai/
+│   │   ├── engine.ts         # Workers AI wrapper, response parsing, <think> strip
 │   │   ├── prompt.ts         # System prompt lengkap (rules, examples)
 │   │   └── tools.ts          # AI tool/function definitions
 │   ├── config/
 │   │   └── env.ts            # Env type definitions
 │   ├── db/
-│   │   ├── repository.ts     # Core queries (users, transactions, debts)
+│   │   ├── repository.ts     # Core queries (users, transactions, debts, conversation)
 │   │   └── repository-target.ts  # Target queries (obligations, goals, settings)
 │   ├── handlers/
-│   │   └── message.ts        # Telegram message → AI → response
+│   │   ├── start.ts          # /start command handler (onboarding)
+│   │   └── message.ts        # Telegram message → AI → response pipeline
 │   ├── services/
 │   │   ├── router.ts         # Tool call dispatcher
 │   │   ├── transaction.ts    # Income/expense recording
@@ -105,26 +109,40 @@ ojol-cuanbot/
 │   │   ├── edit.ts           # Edit/delete transactions
 │   │   ├── edit-debt.ts      # Edit/delete debts
 │   │   ├── summary.ts        # Rekap: today, yesterday, this_week, this_month
-│   │   └── target.ts         # Smart daily target calculation
+│   │   ├── target.ts         # Smart daily target calculation
+│   │   └── user.ts           # Get or create user
 │   ├── types/
-│   │   └── transaction.ts    # ToolCallResult, User, etc.
+│   │   ├── transaction.ts    # User, ParsedTransaction, ToolCallResult, etc.
+│   │   └── ai-response.ts    # ToolCall, AIResult interfaces
 │   └── utils/
-│       ├── formatter.ts      # Telegram HTML response builder
-│       ├── date.ts           # Date utils (WIB timezone, offset)
-│       └── validator.ts      # Amount validation, string sanitization
+│       ├── formatter.ts      # Telegram HTML response builder (14KB, handles all result types)
+│       ├── date.ts           # Date utils (WIB timezone, offset, range)
+│       └── validator.ts      # Amount validation, HTML string sanitization
 ├── migrations/
 │   ├── 0001_init.sql         # users, transactions, categories, debts, debt_payments, conversation_logs
 │   ├── 0002_smart_target.sql # obligations, goals, user_settings
 │   └── 0003_smart_debt.sql   # ALTER debts: +8 columns (due_date, interest, installment)
 ├── test/
-│   └── services/
-│       ├── transaction.spec.ts
-│       └── debt.spec.ts
-├── .github/workflows/deploy.yml  # CI: test → deploy
+│   ├── index.spec.ts         # Worker entry point tests (3 tests)
+│   ├── env.d.ts              # Test environment type declarations
+│   ├── tsconfig.json         # Test-specific tsconfig
+│   ├── services/
+│   │   ├── transaction.spec.ts  # Transaction recording tests (15 tests)
+│   │   ├── debt.spec.ts         # Smart debt tests (~12 tests)
+│   │   ├── router.spec.ts       # Tool call dispatch tests (11 tests)
+│   │   └── target.spec.ts       # Smart target calculation tests
+│   └── utils/
+│       ├── validator.spec.ts    # validateAmount + sanitizeString (19 tests)
+│       ├── date.spec.ts         # getDateFromOffset + getDateRange (12 tests)
+│       └── formatter.spec.ts    # formatRupiah + formatReply (19 tests)
+├── .github/workflows/
+│   ├── ci.yml                # CI: test on push/PR to main
+│   └── deploy.yml            # CD: auto deploy on push to main
 ├── wrangler.jsonc
 ├── package.json
 ├── tsconfig.json
-└── vitest.config.mts
+├── vitest.config.mts
+└── worker-configuration.d.ts
 ```
 
 ---
@@ -297,9 +315,21 @@ CREATE TABLE user_settings (
 - Edit hutang
 - Service: `src/services/edit.ts`, `src/services/edit-debt.ts`
 
-#### 6.6 CI/CD
-- GitHub Actions: test → deploy on push to main
-- Auto-deploy ke Cloudflare Workers
+#### 6.6 /start Command
+- Onboarding flow untuk user baru
+- Auto-create user di database
+- Handler: `src/handlers/start.ts`
+
+#### 6.7 AI Engine
+- Workers AI (Qwen3-30B-A3B) wrapper
+- `<think>` tag stripping (Qwen3 quirk)
+- Robust argument parsing (string → object)
+- OpenAI-compatible API format
+- Engine: `src/ai/engine.ts`
+
+#### 6.8 CI/CD
+- **CI**: GitHub Actions — test on push/PR to main (`.github/workflows/ci.yml`)
+- **CD**: GitHub Actions — auto deploy to Cloudflare Workers on push to main (`.github/workflows/deploy.yml`)
 
 ### 🔲 PLANNED (Roadmap)
 
@@ -308,6 +338,10 @@ CREATE TABLE user_settings (
 - [ ] Notifikasi/reminder jatuh tempo hutang (scheduled worker)
 - [ ] Export data (PDF/CSV rekap bulanan)
 - [ ] Dashboard web dengan grafik (analytics)
+- [ ] `/help` command — panduan lengkap penggunaan
+- [ ] `/reset` command — clear conversation history
+- [ ] `/rekap` command — shortcut rekap hari ini
+- [ ] `/target` command — shortcut lihat target harian
 
 ---
 
@@ -367,6 +401,13 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 - Latency rendah (same edge network)
 - Tidak perlu manage API key eksternal untuk AI
 
+### Kenapa Qwen3-30B-A3B (bukan model lain)?
+- MoE architecture: hanya 3B param aktif per query → latensi cepat
+- Harga sangat murah ($0.051/M input, $0.335/M output)
+- Function calling native
+- Multilingual kuat (termasuk Bahasa Indonesia informal)
+- **Catatan**: Qwen3 kadang mengembalikan `<think>` tags dalam tool call arguments — `engine.ts` sudah handle ini
+
 ### Kenapa D1 (bukan Postgres/Supabase)?
 - Zero-config, gratis
 - SQLite = simple, cukup untuk single-bot use case
@@ -385,11 +426,45 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 ### Kenapa conversation_logs?
 - AI butuh context dari chat sebelumnya
 - Disimpan di D1, di-load per user saat request
-- Dibatasi N pesan terakhir untuk hemat token
+- Dibatasi 6 pesan terakhir untuk hemat token
 
 ---
 
-## 10. Changelog (Keputusan & Milestone)
+## 10. Known Issues & Quirks
+
+| Issue | Detail | Workaround |
+|-------|--------|------------|
+| Qwen3 `<think>` tags | Model kadang wrap arguments dalam `<think>...</think>` | `engine.ts` strips tags before JSON.parse |
+| Empty reply | Jika AI return tool calls tanpa text, formatter bisa return empty string | `formatter.ts` has "Diproses!" fallback |
+| BOT_INFO must be valid JSON | `wrangler.jsonc` vars `BOT_INFO` harus valid JSON string | Set via `npx wrangler secret put` atau update vars |
+| D1 migration manual | Migrations tidak auto-run, harus manual via wrangler CLI | `npx wrangler d1 migrations apply cuanbot-db` |
+
+---
+
+## 11. Test Coverage
+
+| Test File | Tests | What it covers |
+|-----------|-------|----------------|
+| `test/index.spec.ts` | 3 | Worker entry point (GET health, POST webhook, other methods) |
+| `test/utils/validator.spec.ts` | 19 | `validateAmount` (boundaries, edge cases), `sanitizeString` (XSS, truncation) |
+| `test/utils/date.spec.ts` | 12 | `getDateFromOffset`, `getDateRange` (today, yesterday, this_week, this_month) |
+| `test/utils/formatter.spec.ts` | 19 | `formatRupiah`, `formatReply` (all ToolCallResult types) |
+| `test/services/router.spec.ts` | 11 | All tool routes, multi tool calls, unknown tool, empty calls |
+| `test/services/debt.spec.ts` | ~12 | Interest calc, overdue detection, next payment, debt history |
+| `test/services/target.spec.ts` | varies | Smart target calculation |
+| `test/services/transaction.spec.ts` | 15 | Recording, validation, skip invalid, date offset, category lookup |
+| **Total** | **~91+** | **All pass** |
+
+### Belum ada test (Tahap 2 roadmap):
+- `src/services/edit.ts`
+- `src/services/edit-debt.ts`
+- `src/services/summary.ts`
+- `src/services/user.ts`
+- `src/ai/engine.ts`
+
+---
+
+## 12. Changelog (Keputusan & Milestone)
 
 | Tanggal | Event | Detail |
 |---------|-------|--------|
@@ -401,11 +476,16 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 | 2026-02-07 | Auto-progress | Progress bar otomatis setiap catat income |
 | 2026-02-07 | Smart debt v1 | Due date, interest, installments, overdue, history |
 | 2026-02-07 | Hotfix display | Fix sisa/total display, recurring_day logic, target tool enforcement |
+| 2026-02-07 | Test suite v1 | 5 test files, 64 tests all pass (PR #2) |
+| 2026-02-07 | Validator bugfix | Fix double-escaping in sanitizeString |
+| 2026-02-07 | AI response fix | Fix empty reply, robust parsing, `<think>` tag strip (PR #3, #4) |
+| 2026-02-07 | Smart debt deploy | Migration 0003, full smart debt features (PR #10) |
 | 2026-02-08 | Documentation | README.md + AI_CONTEXT.md |
+| 2026-02-08 | Tahap 1 cleanup | Add transaction test, remove stubs, update AI_CONTEXT.md |
 
 ---
 
-## 11. Instruksi untuk AI (Workflow)
+## 13. Instruksi untuk AI (Workflow)
 
 ### Ketika diminta MENAMBAH FITUR BARU:
 1. Baca section 6 (fitur) untuk cek apakah sudah ada
@@ -414,7 +494,7 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 4. Implementasi: repository → service → tools → prompt → formatter → router
 5. Tambah test jika logic complex
 6. Push, buat PR, minta user review
-7. Setelah merge, **UPDATE file AI_CONTEXT.md ini** (section 6, 7, 10)
+7. Setelah merge, **UPDATE file AI_CONTEXT.md ini** (section 4, 6, 11, 12)
 
 ### Ketika diminta MEMPERBAIKI BUG:
 1. Buat branch `hotfix/<deskripsi>`
@@ -443,7 +523,7 @@ Tool yang tersedia untuk AI di `src/ai/tools.ts`:
 
 ---
 
-## 12. Cara Pakai File Ini di Page Baru
+## 14. Cara Pakai File Ini di Page Baru
 
 Ketika memulai percakapan baru, user cukup bilang:
 
@@ -453,4 +533,4 @@ AI akan membaca file ini dan langsung punya konteks lengkap tanpa perlu mengulan
 
 ---
 
-*Last updated: 2026-02-08*
+*Last updated: 2026-02-08 — Tahap 1 cleanup*

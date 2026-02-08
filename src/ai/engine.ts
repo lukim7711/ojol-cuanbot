@@ -315,8 +315,11 @@ async function normalizeWithQwen(
 }
 
 // ============================================================
-// STAGE 2: Llama Executor — reliable function calling
-// Gets conversation history for edit/context awareness
+// STAGE 2: Llama Scout Executor — reliable function calling
+// Uses tool_choice "required" directly because:
+// 1. Casual chat is already filtered before reaching this stage
+// 2. Scout 17B ignores "auto" ~90% of the time (wastes a retry)
+// 3. Every message here MUST produce a tool call
 // ============================================================
 async function executeWithLlama(
   env: Env,
@@ -335,49 +338,26 @@ async function executeWithLlama(
     },
   ];
 
-  console.log(`[FC] Sending to Llama: "${normalizedText}"`);
+  console.log(`[FC] Sending to Llama Scout: "${normalizedText}"`);
 
-  // First attempt with tool_choice: "auto"
+  // Use tool_choice "required" directly — Scout responds poorly to "auto"
+  // All messages reaching this stage are pre-filtered (casual chat handled by Qwen)
   const response = (await env.AI.run(LLAMA_MODEL as any, {
     messages,
     tools: TOOLS as any,
-    tool_choice: "auto",
+    tool_choice: "required",
   })) as any;
 
   console.log("[FC] Response keys:", Object.keys(response));
 
-  let result = parseAIResponse(response);
+  const result = parseAIResponse(response);
 
-  // Retry with "required" if 0 tool calls on non-casual input
   if (result.toolCalls.length === 0) {
-    console.warn(
-      `[FC] 0 tool calls. Retrying with tool_choice=required...`
+    console.warn("[FC] 0 tool calls even with tool_choice=required.");
+  } else {
+    console.log(
+      `[FC] Success: ${result.toolCalls.length} tool call(s) on first attempt`
     );
-
-    const retryMessages = [
-      { role: "system" as const, content: buildExecutorPrompt(currentDate) },
-      ...conversationHistory,
-      {
-        role: "user" as const,
-        content: `[INSTRUKSI: Kamu WAJIB memanggil tool. Pesan asli: "${originalText}"]\n\n${normalizedText}`,
-      },
-    ];
-
-    const retryResponse = (await env.AI.run(LLAMA_MODEL as any, {
-      messages: retryMessages,
-      tools: TOOLS as any,
-      tool_choice: "required",
-    })) as any;
-
-    const retryResult = parseAIResponse(retryResponse);
-    if (retryResult.toolCalls.length > 0) {
-      console.log(
-        `[FC] Retry successful: ${retryResult.toolCalls.length} tool calls`
-      );
-      result = retryResult;
-    } else {
-      console.warn("[FC] Retry also returned 0 tool calls.");
-    }
   }
 
   return result;
@@ -438,13 +418,13 @@ export async function runAI(
   }
 
   // ============================================
-  // PIPELINE: Qwen NLU → Llama FC
+  // PIPELINE: Qwen NLU → Llama Scout FC
   // ============================================
 
   // Stage 1: Qwen normalizes Indonesian slang (NO history — current msg only)
   const normalized = await normalizeWithQwen(env, userText);
 
-  // Stage 2: Llama executes function calling (WITH history for edit context)
+  // Stage 2: Llama Scout executes function calling (WITH history for edit context)
   let result = await executeWithLlama(
     env,
     normalized,

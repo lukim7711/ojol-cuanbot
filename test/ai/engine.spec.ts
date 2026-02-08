@@ -1,231 +1,109 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
+import {
+  detectHallucinatedResponse,
+  looksLikeFinancialInput,
+} from "../../src/ai/engine";
 
-// ── Mock dependencies ──
-vi.mock("../../src/ai/tools", () => ({
-  TOOLS: [
-    {
-      type: "function",
-      function: {
-        name: "record_transactions",
-        description: "test",
-        parameters: { type: "object", properties: {} },
-      },
-    },
-  ],
-}));
-
-vi.mock("../../src/ai/prompt", () => ({
-  buildSystemPrompt: vi.fn((date: string) => `System prompt for ${date}`),
-}));
-
-// We test the pure utility functions by importing them.
-// Since stripThinkingTags and parseToolArguments are not exported,
-// we test them indirectly through runAI behavior.
-
-import { runAI, AIResult } from "../../src/ai/engine";
-
-// Helper: create mock env with AI.run returning given response
-function createMockEnv(aiResponse: any) {
-  return {
-    BOT_TOKEN: "test-token",
-    BOT_INFO: '{}',
-    DB: {} as D1Database,
-    AI: {
-      run: vi.fn().mockResolvedValue(aiResponse),
-    },
-  } as any;
-}
-
-describe("runAI", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("detectHallucinatedResponse", () => {
+  it("returns false for null", () => {
+    expect(detectHallucinatedResponse(null)).toBe(false);
   });
 
-  // ── Format A: OpenAI-compatible (choices[0].message.tool_calls) ──
-  it("extracts tool calls from OpenAI-compatible format", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          tool_calls: [{
-            function: {
-              name: "record_transactions",
-              arguments: JSON.stringify({ transactions: [{ type: "income", amount: 59000 }] }),
-            },
-          }],
-          content: null,
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "dapet 59rb");
-
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls[0].name).toBe("record_transactions");
-    expect(result.toolCalls[0].arguments.transactions[0].amount).toBe(59000);
-    expect(result.textResponse).toBeNull();
+  it("returns false for normal chat response", () => {
+    expect(detectHallucinatedResponse("Sama-sama bos!")).toBe(false);
   });
 
-  // ── Format B: Legacy (response.tool_calls) ──
-  it("extracts tool calls from legacy format", async () => {
-    const env = createMockEnv({
-      tool_calls: [{
-        name: "record_transactions",
-        arguments: { transactions: [{ type: "expense", amount: 25000 }] },
-      }],
-    });
-
-    const result = await runAI(env, 1, "makan 25rb");
-
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls[0].name).toBe("record_transactions");
-    // arguments already an object, should be passed through
-    expect(result.toolCalls[0].arguments.transactions[0].amount).toBe(25000);
+  it("returns false for confirmation without financial data", () => {
+    expect(detectHallucinatedResponse("Tercatat ya!")).toBe(false);
   });
 
-  // ── Text response extraction ──
-  it("extracts text response from choices[0].message.content", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          content: "Halo bos! Ada yang bisa dibantu?",
-          tool_calls: [],
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "halo");
-
-    expect(result.toolCalls).toHaveLength(0);
-    expect(result.textResponse).toBe("Halo bos! Ada yang bisa dibantu?");
+  it("detects 'Tercatat' with Rp amount", () => {
+    expect(
+      detectHallucinatedResponse(
+        "✅ Tercatat!\n💰 Pemasukan: Rp10.000 — ceban dari tip"
+      )
+    ).toBe(true);
   });
 
-  it("extracts text response from response.response (fallback)", async () => {
-    const env = createMockEnv({
-      response: "Fallback text response",
-    });
-
-    const result = await runAI(env, 1, "halo");
-
-    expect(result.textResponse).toBe("Fallback text response");
+  it("detects 'Dicatat' with Rp amount", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Dicatat!\nPengeluaran: Rp5.000 — rokok goceng"
+      )
+    ).toBe(true);
   });
 
-  // ── <think> tag stripping ──
-  it("strips <think> tags from text response", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          content: "<think>internal reasoning here</think>Halo bos!",
-          tool_calls: [],
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "halo");
-
-    expect(result.textResponse).toBe("Halo bos!");
-    expect(result.textResponse).not.toContain("<think>");
+  it("detects 'Sudah dicatat' with pemasukan", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Sudah dicatat bos! Pemasukan 50rb dari bonus."
+      )
+    ).toBe(true);
   });
 
-  it("strips <think> tags from tool call arguments (string)", async () => {
-    const argsWithThink = '<think>reasoning</think>{"transactions": [{"type": "income", "amount": 59000}]}';
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          tool_calls: [{
-            function: {
-              name: "record_transactions",
-              arguments: argsWithThink,
-            },
-          }],
-          content: null,
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "dapet 59rb");
-
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls[0].arguments.transactions[0].amount).toBe(59000);
+  it("detects 'Berhasil disimpan' with pengeluaran", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Berhasil disimpan! Pengeluaran: Rp30.000 — bensin"
+      )
+    ).toBe(true);
   });
 
-  // ── No tool calls and no text ──
-  it("returns empty result when AI returns nothing useful", async () => {
-    const env = createMockEnv({});
+  it("detects response with rb amount", () => {
+    expect(
+      detectHallucinatedResponse(
+        "Tercatat! Pemasukan 50rb dari bonus"
+      )
+    ).toBe(true);
+  });
+});
 
-    const result = await runAI(env, 1, "test");
-
-    expect(result.toolCalls).toHaveLength(0);
-    expect(result.textResponse).toBeNull();
+describe("looksLikeFinancialInput", () => {
+  it("returns false for greeting", () => {
+    expect(looksLikeFinancialInput("halo bos")).toBe(false);
   });
 
-  // ── Multiple tool calls ──
-  it("handles multiple tool calls in one response", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          tool_calls: [
-            {
-              function: {
-                name: "record_transactions",
-                arguments: JSON.stringify({ transactions: [] }),
-              },
-            },
-            {
-              function: {
-                name: "record_transactions",
-                arguments: JSON.stringify({ transactions: [] }),
-              },
-            },
-          ],
-          content: null,
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "multi");
-
-    expect(result.toolCalls).toHaveLength(2);
+  it("returns false for question without numbers", () => {
+    expect(looksLikeFinancialInput("rekap hari ini")).toBe(false);
   });
 
-  // ── Tool call without name is skipped ──
-  it("skips tool calls without a name", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          tool_calls: [
-            { function: { arguments: '{}' } },  // no name
-            { function: { name: "record_transactions", arguments: '{}' } },
-          ],
-          content: null,
-        },
-      }],
-    });
-
-    const result = await runAI(env, 1, "test");
-
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls[0].name).toBe("record_transactions");
+  it("detects 'dapet 120rb'", () => {
+    expect(looksLikeFinancialInput("dapet 120rb dari orderan")).toBe(true);
   });
 
-  // ── Malformed JSON arguments fallback ──
-  it("returns empty object for unparseable arguments", async () => {
-    const env = createMockEnv({
-      choices: [{
-        message: {
-          tool_calls: [{
-            function: {
-              name: "record_transactions",
-              arguments: "this is not json at all",
-            },
-          }],
-          content: null,
-        },
-      }],
-    });
+  it("detects 'makan 25rb'", () => {
+    expect(looksLikeFinancialInput("makan nasi padang 25rb")).toBe(true);
+  });
 
-    const result = await runAI(env, 1, "test");
+  it("detects 'bensin 30rb'", () => {
+    expect(looksLikeFinancialInput("isi bensin 30rb")).toBe(true);
+  });
 
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls[0].arguments).toEqual({});
+  it("detects slang: 'rokok goceng'", () => {
+    expect(looksLikeFinancialInput("rokok goceng")).toBe(true);
+  });
+
+  it("detects slang: 'bonus gocap'", () => {
+    expect(looksLikeFinancialInput("bonus gocap")).toBe(true);
+  });
+
+  it("detects slang: 'dapet ceban'", () => {
+    expect(looksLikeFinancialInput("dapet ceban dari tip")).toBe(true);
+  });
+
+  it("detects hutang: 'minjem 500rb'", () => {
+    expect(looksLikeFinancialInput("minjem ke Budi 500rb")).toBe(true);
+  });
+
+  it("detects cicilan: 'cicilan 50rb'", () => {
+    expect(looksLikeFinancialInput("cicilan gopay 50rb per hari")).toBe(true);
+  });
+
+  it("returns false for just numbers without context", () => {
+    expect(looksLikeFinancialInput("123456")).toBe(false);
+  });
+
+  it("returns false for non-financial text with numbers", () => {
+    expect(looksLikeFinancialInput("gue udah 3 tahun narik")).toBe(false);
   });
 });

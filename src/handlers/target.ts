@@ -7,7 +7,7 @@
 
 import { Context } from "grammy";
 import { Env } from "../config/env";
-import { createRepository } from "../db/repository";
+import { getOrCreateUser } from "../services/user";
 import { getDailyTarget } from "../services/target";
 import { formatDailyTarget } from "../utils/formatter";
 
@@ -25,10 +25,14 @@ export async function handleTarget(ctx: Context, env: Env): Promise<void> {
   try {
     console.log(`[Cmd] /target from user ${userId}`);
 
-    const repo = createRepository(env.DB);
-    const targetData = await getDailyTarget(repo, userId);
+    // Get user object
+    const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
 
-    const response = formatDailyTarget(targetData);
+    // Call service with correct signature
+    const result = await getDailyTarget(env.DB, user, {});
+
+    // Format response
+    const response = formatDailyTarget(result.data);
 
     await ctx.reply(response, { parse_mode: "HTML" });
   } catch (error) {

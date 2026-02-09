@@ -7,7 +7,7 @@
 
 import { Context } from "grammy";
 import { Env } from "../config/env";
-import { createRepository } from "../db/repository";
+import { getOrCreateUser } from "../services/user";
 import { getSummary } from "../services/summary";
 import { formatSummary } from "../utils/formatter";
 
@@ -25,10 +25,14 @@ export async function handleRekap(ctx: Context, env: Env): Promise<void> {
   try {
     console.log(`[Cmd] /rekap from user ${userId}`);
 
-    const repo = createRepository(env.DB);
-    const summary = await getSummary(repo, userId, "today");
+    // Get user object
+    const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
 
-    const response = formatSummary(summary, "today");
+    // Call service with correct signature
+    const result = await getSummary(env.DB, user, { period: "today" });
+
+    // Format response
+    const response = formatSummary(result.data, "today");
 
     await ctx.reply(response, { parse_mode: "HTML" });
   } catch (error) {

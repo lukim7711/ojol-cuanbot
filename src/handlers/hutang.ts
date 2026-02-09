@@ -7,7 +7,7 @@
 
 import { Context } from "grammy";
 import { Env } from "../config/env";
-import { createRepository } from "../db/repository";
+import { getOrCreateUser } from "../services/user";
 import { getDebts } from "../services/debt";
 import { formatDebtList } from "../utils/formatter";
 
@@ -25,17 +25,16 @@ export async function handleHutang(ctx: Context, env: Env): Promise<void> {
   try {
     console.log(`[Cmd] /hutang from user ${userId}`);
 
-    const repo = createRepository(env.DB);
-    
+    // Get user object
+    const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
+
     // Query both hutang and piutang
-    const [hutangList, piutangList] = await Promise.all([
-      getDebts(repo, userId, "hutang"),
-      getDebts(repo, userId, "piutang"),
-    ]);
+    const hutangResult = await getDebts(env.DB, user, { type: "hutang" });
+    const piutangResult = await getDebts(env.DB, user, { type: "piutang" });
 
     // Format combined list
-    const hutangFormatted = formatDebtList(hutangList, "hutang");
-    const piutangFormatted = formatDebtList(piutangList, "piutang");
+    const hutangFormatted = formatDebtList(hutangResult.data, "hutang");
+    const piutangFormatted = formatDebtList(piutangResult.data, "piutang");
 
     const response = `<b>💸 Daftar Hutang & Piutang</b>\n\n${hutangFormatted}\n\n${piutangFormatted}`;
 

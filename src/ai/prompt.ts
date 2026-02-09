@@ -37,6 +37,12 @@ HARI INI: ${currentDate}
 - "X bayar" / "X nyicil" = pembayaran hutang/piutang dari X
 - "bayar hutang X" = user membayar hutang ke X
 
+== ATURAN KEWAJIBAN/OBLIGATION (PENTING) ==
+- "kewajiban X sudah selesai" / "kewajiban X sudah dibayar" / "hapus kewajiban X" → hapus kewajiban X
+- JANGAN ubah menjadi "pembayaran" — ini BUKAN pay_debt
+- Contoh BENAR: "kewajiban gopay sudah selesai" → "hapus kewajiban gopay" atau "kewajiban gopay selesai"
+- Contoh SALAH: "kewajiban gopay sudah selesai" → "pembayaran gopay selesai" ← SALAH!
+
 == ATURAN EDIT/HAPUS (SANGAT PENTING) ==
 Saat user ingin EDIT atau HAPUS transaksi:
 - WAJIB pertahankan NAMA ITEM / KATEGORI yang disebutkan user
@@ -134,6 +140,12 @@ Output: set goal beli helm Rp300.000 deadline 30 hari
 Input: "nabung minimal 20rb per hari"
 Output: set tabungan harian minimal Rp20.000
 
+Input: "kewajiban gopay sudah selesai"
+Output: hapus kewajiban gopay
+
+Input: "kewajiban kontrakan udah dibayar"
+Output: hapus kewajiban kontrakan
+
 Input: "reset"
 Output: reset semua data
 
@@ -142,7 +154,8 @@ PENTING:
 - Jangan jawab/proses — HANYA terjemahkan
 - Jika pesan sudah jelas (angka eksplisit), tulis ulang apa adanya
 - SELALU konversi slang angka ke Rupiah eksplisit
-- WAJIB pertahankan nama item/kategori saat edit/hapus — JANGAN generalisasi`;
+- WAJIB pertahankan nama item/kategori saat edit/hapus — JANGAN generalisasi
+- "kewajiban X selesai" → SELALU normalize ke "hapus kewajiban X" (BUKAN "pembayaran")`;
 }
 
 /**
@@ -208,7 +221,8 @@ Target:
 - "set kewajiban X RpY per Z" → set_obligation: {name:"X", amount:Y, frequency:"Z"}
 - "set goal X RpY deadline N hari" → set_goal: {name:"X", target_amount:Y, deadline_days:N}
 - "set tabungan harian minimal RpY" → set_saving: {amount:Y}
-- "hapus kewajiban X" / "kewajiban X udah dibayar" / "kewajiban X selesai" → edit_obligation: {action:"done", name:"X"}
+- "hapus kewajiban X" / "kewajiban X selesai" → edit_obligation: {action:"done", name:"X"}
+  HANYA panggil edit_obligation. JANGAN tambah pay_debt.
 - "batal goal X" / "hapus goal X" → edit_goal: {action:"cancel", name:"X"}
 
 Reset:
@@ -242,9 +256,10 @@ Berikut contoh input → tool call yang BENAR:
    [Pesan asli: "yang rokok tadi hapus aja"]
    → edit_transaction({action: "delete", target: "rokok"})
 
-5. Input: "kewajiban cicilan gopay selesai"
+5. Input: "hapus kewajiban gopay"
    [Pesan asli: "kewajiban gopay sudah selesai"]
    → edit_obligation({action: "done", name: "cicilan gopay"})
+   HANYA 1 tool call. JANGAN tambah pay_debt ❌
 
 6. Input: "batalkan goal beli helm baru"
    [Pesan asli: "batalkan goal helm"]
@@ -265,6 +280,7 @@ Berikut contoh input → tool call yang BENAR:
 == PERILAKU ==
 - Satu pesan banyak transaksi → record_transactions SEKALI dengan array (max 10 items)
 - JANGAN panggil tool yang sama lebih dari SEKALI per pesan
+- "hapus kewajiban" atau "kewajiban selesai" → HANYA edit_obligation, JANGAN tambah pay_debt
 - Selalu isi SEMUA required fields
 - Ambil description dari teks yang di-normalize`;
 }

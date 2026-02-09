@@ -63,10 +63,21 @@ async function resolveTarget(
   userId: number,
   target: string
 ): Promise<FoundTransaction | null> {
+  const lowerTarget = target.toLowerCase().trim();
+
+  // ── Layer 0: Explicit "last" from FC ──
+  // FC sends target="last" when user says "yang terakhir salah"
+  // and NLU normalizes to "koreksi data terakhir".
+  // Check this FIRST before keyword matching.
+  if (isReferringToLastTransaction(lowerTarget)) {
+    const last = await findLastTransaction(db, userId);
+    if (last) return last;
+    // If no last transaction found, fall through to other layers
+  }
+
   // Layer 1: Cari berdasarkan deskripsi (LIKE match)
   // "makan di bu tami" → LIKE '%makan%bu%tami%'
-  const keywords = target
-    .toLowerCase()
+  const keywords = lowerTarget
     .split(/\s+/)
     .filter((w) => w.length > 2); // buang kata pendek
 
@@ -78,25 +89,23 @@ async function resolveTarget(
 
   // Layer 2: Cari berdasarkan kategori
   // target mungkin cuma "makan" atau "bensin"
-  const byCat = await findTransactionByCategory(db, userId, target.toLowerCase().trim());
+  const byCat = await findTransactionByCategory(db, userId, lowerTarget);
   if (byCat) return byCat;
 
   // Layer 3: Cari berdasarkan source_text asli
   // Kadang AI kasih target yang mirip kalimat asli user
-  const bySource = await findTransactionBySourceText(db, userId, target.toLowerCase());
+  const bySource = await findTransactionBySourceText(db, userId, lowerTarget);
   if (bySource) return bySource;
 
-  // Layer 4: Fallback — ambil transaksi paling terakhir
-  // Cocok untuk kasus "yang terakhir salah" / "yang barusan"
-  const isReferringToLast =
-    /terakhir|barusan|tadi|baru aja|yang tadi/.test(target.toLowerCase());
-
-  if (isReferringToLast) {
-    const last = await findLastTransaction(db, userId);
-    if (last) return last;
-  }
-
   return null;
+}
+
+/**
+ * Check if target refers to the last/most recent transaction.
+ * Matches both Indonesian patterns and the literal "last" from FC.
+ */
+function isReferringToLastTransaction(target: string): boolean {
+  return /^last$|terakhir|barusan|tadi|baru aja|yang tadi|data terakhir/.test(target);
 }
 
 // ─────────────────────────────────────────────────

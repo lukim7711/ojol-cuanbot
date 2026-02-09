@@ -93,20 +93,26 @@ export function validateToolCalls(result: AIResult): AIResult {
     // Guard: validate debt/payment amounts
     if (
       ["record_debt", "pay_debt", "edit_debt"].includes(tc.name) &&
-      tc.arguments.amount
+      tc.arguments.amount !== undefined
     ) {
       const amount = Number(tc.arguments.amount);
       if (isNaN(amount) || amount < MIN_AMOUNT || amount > MAX_AMOUNT) {
         console.warn(
-          `[Validate] Invalid debt amount: ${tc.arguments.amount}. Clamping.`
+          `[Validate] Invalid debt/payment amount: ${tc.arguments.amount}. Removing tool call.`
         );
-        tc.arguments.amount = Math.max(
-          MIN_AMOUNT,
-          Math.min(MAX_AMOUNT, amount || 0)
-        );
+        tc.arguments._invalid = true;
       }
     }
   }
+
+  // Remove tool calls marked as invalid (e.g. pay_debt with amount=0)
+  result.toolCalls = result.toolCalls.filter((tc) => {
+    if (tc.arguments._invalid) {
+      console.warn(`[Validate] Removing invalid tool call: ${tc.name}`);
+      return false;
+    }
+    return true;
+  });
 
   // Deduplicate: if same tool called multiple times, keep only first
   const seen = new Set<string>();

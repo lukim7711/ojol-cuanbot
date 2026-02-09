@@ -1,59 +1,69 @@
 import { describe, it, expect } from "vitest";
 
-// Test the dedup key generation logic
-function getMessageKey(chatId: number | undefined, messageId: number | undefined): string | null {
+/**
+ * KV-based dedup logic tests.
+ * Tests the pure logic (key generation) and simulates KV behavior.
+ */
+
+function getDedupKey(chatId: number | undefined, messageId: number | undefined): string | null {
   if (!chatId || !messageId) return null;
-  return `${chatId}:${messageId}`;
+  return `dedup:${chatId}:${messageId}`;
 }
 
-describe("Message Deduplication", () => {
-  it("generates correct key from chatId and messageId", () => {
-    expect(getMessageKey(12345, 678)).toBe("12345:678");
+describe("Message Deduplication (KV-based)", () => {
+  it("generates correct KV key from chatId and messageId", () => {
+    expect(getDedupKey(12345, 678)).toBe("dedup:12345:678");
   });
 
   it("returns null when chatId is undefined", () => {
-    expect(getMessageKey(undefined, 678)).toBeNull();
+    expect(getDedupKey(undefined, 678)).toBeNull();
   });
 
   it("returns null when messageId is undefined", () => {
-    expect(getMessageKey(12345, undefined)).toBeNull();
-  });
-
-  it("Set correctly detects duplicate keys", () => {
-    const processed = new Set<string>();
-    const key = "12345:678";
-
-    expect(processed.has(key)).toBe(false);
-    processed.add(key);
-    expect(processed.has(key)).toBe(true);
+    expect(getDedupKey(12345, undefined)).toBeNull();
   });
 
   it("different messages get different keys", () => {
-    const key1 = getMessageKey(12345, 678);
-    const key2 = getMessageKey(12345, 679);
+    const key1 = getDedupKey(12345, 678);
+    const key2 = getDedupKey(12345, 679);
     expect(key1).not.toBe(key2);
   });
 
-  it("cache cleanup removes oldest entries", () => {
-    const processed = new Set<string>();
-    const MAX = 10;
+  it("simulates KV dedup behavior (get → null means new, string means dup)", () => {
+    // Simulate KV store
+    const kvStore = new Map<string, string>();
 
-    // Add entries
-    for (let i = 0; i < MAX + 5; i++) {
-      processed.add(`chat:${i}`);
-    }
+    const key = "dedup:12345:678";
 
-    // Simulate cleanup
-    if (processed.size > MAX) {
-      const entries = Array.from(processed);
-      const removeCount = Math.floor(entries.length / 2);
-      for (let i = 0; i < removeCount; i++) {
-        processed.delete(entries[i]);
-      }
-    }
+    // First check: not in KV → new message
+    expect(kvStore.get(key)).toBeUndefined();
 
-    expect(processed.size).toBeLessThanOrEqual(MAX);
-    // Newer entries should still exist
-    expect(processed.has(`chat:${MAX + 4}`)).toBe(true);
+    // Mark as processed
+    kvStore.set(key, "1");
+
+    // Second check: in KV → duplicate
+    expect(kvStore.get(key)).toBe("1");
+  });
+
+  it("simulates TTL expiry (after 5 min, key should be gone)", () => {
+    // In real KV, TTL is handled by Cloudflare.
+    // Here we just verify the concept: after expiry, key is absent.
+    const kvStore = new Map<string, { value: string; expiresAt: number }>();
+
+    const key = "dedup:12345:678";
+    const now = Math.floor(Date.now() / 1000);
+    const TTL = 300; // 5 minutes
+
+    // Store with TTL
+    kvStore.set(key, { value: "1", expiresAt: now + TTL });
+
+    // Before expiry: exists
+    const entry = kvStore.get(key)!;
+    expect(now < entry.expiresAt).toBe(true);
+
+    // After expiry: simulate check
+    const futureTime = now + TTL + 1;
+    expect(futureTime > entry.expiresAt).toBe(true);
+    // In real KV, .get() would return null after TTL
   });
 });

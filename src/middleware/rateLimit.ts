@@ -1,74 +1,69 @@
 /**
- * Per-user Rate Limiter (in-memory)
+ * Per-user Rate Limiter (Cloudflare KV)
  *
- * Limits messages per user within a sliding window.
- * Uses in-memory Map — resets on worker cold start (acceptable for edge workers).
+ * Limits messages per user within a time window.
+ * Uses KV with TTL — state persists across Worker cold starts.
  *
  * Config: 30 messages per 60 seconds per user.
+ *
+ * KV key format: rl:{userId}
+ * KV value: JSON { count: number, start: number (epoch seconds) }
+ * KV TTL: WINDOW_SECONDS (auto-cleanup by Cloudflare)
  */
 
-interface RateLimitEntry {
-  timestamps: number[];
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
-
-// Rate limit config
 const MAX_MESSAGES = 30;
-const WINDOW_MS = 60 * 1000; // 60 seconds
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const WINDOW_SECONDS = 60;
 
-let lastCleanup = Date.now();
+interface RateLimitEntry {
+  count: number;
+  start: number; // epoch seconds
+}
 
 /**
  * Check if a user has exceeded the rate limit.
  * Returns true if the request should be BLOCKED.
+ *
+ * @param kv - Cloudflare KV namespace (RATE_LIMIT binding)
+ * @param userId - Telegram user ID
  */
-export function isRateLimited(userId: string): boolean {
-  const now = Date.now();
+export async function isRateLimited(
+  kv: KVNamespace,
+  userId: string
+): Promise<boolean> {
+  const key = `rl:${userId}`;
+  const now = Math.floor(Date.now() / 1000);
 
-  // Periodic cleanup of stale entries
-  if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
-    cleanupStaleEntries(now);
-    lastCleanup = now;
-  }
+  try {
+    const data = await kv.get<RateLimitEntry>(key, "json");
 
-  let entry = rateLimitMap.get(userId);
-  if (!entry) {
-    entry = { timestamps: [] };
-    rateLimitMap.set(userId, entry);
-  }
-
-  // Remove timestamps outside the window
-  entry.timestamps = entry.timestamps.filter((t) => now - t < WINDOW_MS);
-
-  // Check if over limit
-  if (entry.timestamps.length >= MAX_MESSAGES) {
-    console.warn(`[RateLimit] User ${userId} exceeded ${MAX_MESSAGES} msgs/${WINDOW_MS / 1000}s`);
-    return true;
-  }
-
-  // Record this request
-  entry.timestamps.push(now);
-  return false;
-}
-
-/**
- * Remove entries that haven't been active in the last window.
- */
-function cleanupStaleEntries(now: number): void {
-  let removed = 0;
-  for (const [userId, entry] of rateLimitMap.entries()) {
-    // If all timestamps are outside window, remove entry
-    const fresh = entry.timestamps.filter((t) => now - t < WINDOW_MS);
-    if (fresh.length === 0) {
-      rateLimitMap.delete(userId);
-      removed++;
-    } else {
-      entry.timestamps = fresh;
+    // No entry or window expired → start fresh
+    if (!data || now - data.start >= WINDOW_SECONDS) {
+      await kv.put(key, JSON.stringify({ count: 1, start: now }), {
+        expirationTtl: WINDOW_SECONDS,
+      });
+      return false;
     }
-  }
-  if (removed > 0) {
-    console.log(`[RateLimit] Cleanup: removed ${removed} stale entries, ${rateLimitMap.size} remaining`);
+
+    // Within window — check count
+    if (data.count >= MAX_MESSAGES) {
+      console.warn(
+        `[RateLimit] User ${userId} exceeded ${MAX_MESSAGES} msgs/${WINDOW_SECONDS}s`
+      );
+      return true;
+    }
+
+    // Increment counter, keep remaining TTL
+    const remainingTtl = WINDOW_SECONDS - (now - data.start);
+    await kv.put(
+      key,
+      JSON.stringify({ count: data.count + 1, start: data.start }),
+      { expirationTtl: Math.max(remainingTtl, 1) }
+    );
+    return false;
+  } catch (error) {
+    // If KV fails, ALLOW the request (fail-open)
+    // Better to let a spammer through than block all users
+    console.error("[RateLimit] KV error, failing open:", error);
+    return false;
   }
 }

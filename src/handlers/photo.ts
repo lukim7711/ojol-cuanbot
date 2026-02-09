@@ -34,8 +34,8 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 
   const telegramId = String(ctx.from.id);
 
-  // Rate limit check
-  if (isRateLimited(telegramId)) {
+  // Rate limit check (KV-based)
+  if (await isRateLimited(env.RATE_LIMIT, telegramId)) {
     try {
       await ctx.reply("⏳ Sabar bos, kebanyakan pesan nih. Tunggu bentar ya.");
     } catch (_) {}
@@ -157,9 +157,9 @@ function buildOCRPrompt(ocrText: string, caption?: string): string {
     prompt += "User kirim foto. ";
   }
 
-  prompt += `Berikut teks yang di-extract dari gambar:\n\n"""
+  prompt += `Berikut teks yang di-extract dari gambar:\n\n\"\"\"
 ${ocrText}
-"""\n\n`;
+\"\"\"\n\n`;
 
   prompt += "Tolong analisa teks di atas dan catat transaksi yang relevan (pemasukan/pengeluaran). ";
   prompt += "Jika teks berisi data keuangan, extract semua transaksi. ";

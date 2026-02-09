@@ -6,6 +6,7 @@ import { processToolCalls } from "../services/router";
 import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
 import { isRateLimited } from "../middleware/rateLimit";
+import { sanitizeUserInput, hasInjectionPatterns } from "../middleware/inputGuard";
 
 /**
  * In-memory set to track recently processed Telegram message IDs.
@@ -81,6 +82,22 @@ export async function handleMessage(
     return;
   }
 
+  // ============================================
+  // INPUT GUARD — Prompt injection filter + length limit
+  // ============================================
+  if (hasInjectionPatterns(text)) {
+    console.warn(`[Security] Prompt injection patterns detected from user ${telegramId}`);
+  }
+
+  const cleanedText = sanitizeUserInput(text);
+  if (!cleanedText) {
+    console.warn(`[Security] Input empty after sanitization from user ${telegramId}`);
+    try {
+      await ctx.reply("🤔 Pesan lo kosong atau nggak valid. Coba ketik ulang ya.");
+    } catch (_) {}
+    return;
+  }
+
   try {
     const displayName = ctx.from.first_name ?? "Driver";
 
@@ -96,18 +113,18 @@ export async function handleMessage(
       content: h.content,
     }));
 
-    // 3. Save user message
+    // 3. Save user message (save original, not cleaned — for audit trail)
     await saveConversation(env.DB, user.id, "user", text);
 
-    // 4. Run AI engine
-    const aiResult = await runAI(env, user.id, text, conversationHistory);
+    // 4. Run AI engine (use CLEANED text — stripped of injection patterns)
+    const aiResult = await runAI(env, user.id, cleanedText, conversationHistory);
 
     // 5. Process tool calls
     const results = await processToolCalls(
       env.DB,
       user,
       aiResult.toolCalls,
-      text
+      cleanedText
     );
 
     // 6. Format reply

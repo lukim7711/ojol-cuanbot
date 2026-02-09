@@ -2,7 +2,7 @@ import { Bot, webhookCallback } from "grammy";
 import { Env } from "./config/env";
 import { handleStart } from "./handlers/start";
 import { handleMessage } from "./handlers/message";
-import { handleReset } from "./handlers/reset";
+import { handleReset, handleConfirmReset } from "./handlers/reset";
 import { handleRekap } from "./handlers/rekap";
 import { handleTarget } from "./handlers/target";
 import { handleHutang } from "./handlers/hutang";
@@ -17,6 +17,7 @@ export function createBot(env: Env) {
   bot.command("start", (ctx) => handleStart(ctx, env));
   bot.command("help", (ctx) => handleStart(ctx, env));
   bot.command("reset", (ctx) => handleReset(ctx, env));
+  bot.command("confirm_reset", (ctx) => handleConfirmReset(ctx, env));
   
   // Query shortcuts — 0 neurons per request
   bot.command("rekap", (ctx) => handleRekap(ctx, env));

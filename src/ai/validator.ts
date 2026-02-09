@@ -2,6 +2,8 @@
  * AI Validation & Detection
  * Validates tool calls (amounts, array sizes, dedup) and detects
  * casual chat / financial input / action queries.
+ *
+ * Phase 3: Added delete limiter — max 1 delete operation per request.
  */
 
 import { AIResult } from "./parser";
@@ -29,11 +31,18 @@ export function isCasualChat(text: string): boolean {
 
 /**
  * Validate and sanitize tool calls — defense against runaway arrays
+ * and excessive delete operations.
  */
 export function validateToolCalls(result: AIResult): AIResult {
   const MAX_TRANSACTIONS = 10;
   const MIN_AMOUNT = 1;
   const MAX_AMOUNT = 100_000_000; // 100 juta
+  const MAX_DELETES_PER_REQUEST = 1;
+
+  // ============================================
+  // PHASE 3: Count and limit delete operations
+  // ============================================
+  let deleteCount = 0;
 
   for (const tc of result.toolCalls) {
     // Guard: ensure transactions is an array (Llama sometimes returns string)
@@ -103,9 +112,25 @@ export function validateToolCalls(result: AIResult): AIResult {
         tc.arguments._invalid = true;
       }
     }
+
+    // ============================================
+    // PHASE 3: Track delete operations
+    // ============================================
+    if (
+      (tc.name === "edit_transaction" || tc.name === "edit_debt") &&
+      tc.arguments.action === "delete"
+    ) {
+      deleteCount++;
+      if (deleteCount > MAX_DELETES_PER_REQUEST) {
+        console.warn(
+          `[Validate] Max ${MAX_DELETES_PER_REQUEST} delete per request. Dropping extra delete: ${tc.name}(${tc.arguments.target || tc.arguments.person_name})`
+        );
+        tc.arguments._invalid = true;
+      }
+    }
   }
 
-  // Remove tool calls marked as invalid (e.g. pay_debt with amount=0)
+  // Remove tool calls marked as invalid
   result.toolCalls = result.toolCalls.filter((tc) => {
     if (tc.arguments._invalid) {
       console.warn(`[Validate] Removing invalid tool call: ${tc.name}`);

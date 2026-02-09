@@ -2,6 +2,8 @@
  * AI Engine — Thin Orchestrator
  * Single model pipeline: Llama Scout handles everything.
  * No more Qwen NLU stage — slang conversion is in-context via system prompt.
+ *
+ * Phase 3: Added daily AI call tracking via KV.
  */
 
 import { Env } from "../config/env";
@@ -16,6 +18,50 @@ export { isCasualChat, validateToolCalls } from "./validator";
 /** AI pipeline timeout — prevents hung Workers AI calls from blocking the entire request */
 const AI_PIPELINE_TIMEOUT_MS = 15_000; // 15 seconds
 
+/** Daily AI call soft limit per user */
+const DAILY_AI_CALL_LIMIT = 200;
+
+/**
+ * Check and increment daily AI call count for a user.
+ * Uses KV with TTL that expires at end of day (max 24h).
+ * Returns true if the user has exceeded the daily limit.
+ *
+ * Fail-open: if KV errors, allow the request.
+ */
+async function isDailyLimitExceeded(
+  kv: KVNamespace,
+  userId: number
+): Promise<boolean> {
+  const key = `ai_daily:${userId}`;
+
+  try {
+    const current = await kv.get<number>(key, "json");
+
+    if (current === null) {
+      // First call today — set counter with 24h TTL
+      await kv.put(key, "1", { expirationTtl: 86400 });
+      return false;
+    }
+
+    if (current >= DAILY_AI_CALL_LIMIT) {
+      console.warn(
+        `[AI] User ${userId} exceeded daily AI call limit (${DAILY_AI_CALL_LIMIT})`
+      );
+      return true;
+    }
+
+    // Increment (keep existing TTL by not setting a new one —
+    // KV put without expirationTtl on existing key preserves nothing,
+    // so we set a safe 24h TTL each time)
+    await kv.put(key, JSON.stringify(current + 1), { expirationTtl: 86400 });
+    return false;
+  } catch (error) {
+    // Fail-open
+    console.error("[AI] Daily limit KV error, failing open:", error);
+    return false;
+  }
+}
+
 /**
  * MAIN ENTRY POINT — Single Model Pipeline
  * Llama Scout handles slang conversion + function calling in one call.
@@ -28,6 +74,26 @@ export async function runAI(
 ): Promise<AIResult> {
   console.log(`[AI] Pipeline start for: "${userText}"`);
 
+  // ============================================
+  // PHASE 3: Daily AI call limit check
+  // ============================================
+  try {
+    if (await isDailyLimitExceeded(env.RATE_LIMIT, userId)) {
+      return {
+        toolCalls: [],
+        textResponse:
+          "⚠️ Bos, hari ini udah banyak banget pesan ke AI (200+). " +
+          "Istirahat dulu ya, besok lanjut lagi! \n\n" +
+          "💡 Sementara bisa pakai command langsung:\n" +
+          "/rekap — Rekap keuangan\n" +
+          "/target — Cek target harian\n" +
+          "/hutang — Daftar hutang",
+      };
+    }
+  } catch (_) {
+    // Fail-open: if check fails, continue
+  }
+
   try {
     return await withTimeout(
       runPipeline(env, userId, userText, conversationHistory),
@@ -38,14 +104,14 @@ export async function runAI(
       console.error(`[AI] Pipeline timed out after ${AI_PIPELINE_TIMEOUT_MS}ms for: "${userText}"`);
       return {
         toolCalls: [],
-        textResponse: "\u23f3 Wah lama banget nih prosesnya. Coba kirim ulang ya bos.",
+        textResponse: "⏳ Wah lama banget nih prosesnya. Coba kirim ulang ya bos.",
       };
     }
 
     console.error("[AI] Pipeline error:", error);
     return {
       toolCalls: [],
-      textResponse: "\u26a0\ufe0f Maaf bos, otak gue lagi error. Coba lagi ya.",
+      textResponse: "⚠️ Maaf bos, otak gue lagi error. Coba lagi ya.",
     };
   }
 }

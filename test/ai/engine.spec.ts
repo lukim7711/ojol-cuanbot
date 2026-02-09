@@ -162,7 +162,6 @@ describe("validateToolCalls", () => {
     };
 
     const validated = validateToolCalls(result);
-    // Invalid amount → tool call removed entirely (not clamped)
     expect(validated.toolCalls.length).toBe(0);
   });
 
@@ -176,7 +175,6 @@ describe("validateToolCalls", () => {
     };
 
     const validated = validateToolCalls(result);
-    // pay_debt with amount=0 should be removed, edit_obligation kept
     expect(validated.toolCalls.length).toBe(1);
     expect(validated.toolCalls[0].name).toBe("edit_obligation");
   });
@@ -222,5 +220,50 @@ describe("validateToolCalls", () => {
     const validated = validateToolCalls(result);
     expect(validated.toolCalls.length).toBe(0);
     expect(validated.textResponse).toBe("hello");
+  });
+
+  // ============================================
+  // PHASE 3: Delete limiter tests
+  // ============================================
+  it("allows single delete operation", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "edit_transaction", arguments: { action: "delete", target: "bensin" } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls.length).toBe(1);
+    expect(validated.toolCalls[0].arguments.action).toBe("delete");
+  });
+
+  it("drops extra delete operations beyond the first", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "edit_transaction", arguments: { action: "delete", target: "bensin" } },
+        { name: "edit_debt", arguments: { action: "delete", person_name: "Budi" } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    // First delete kept, second dropped
+    expect(validated.toolCalls.length).toBe(1);
+    expect(validated.toolCalls[0].name).toBe("edit_transaction");
+  });
+
+  it("allows edit + delete in same request (only delete counts toward limit)", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "edit_transaction", arguments: { action: "edit", target: "bensin", new_amount: 35000 } },
+        { name: "edit_debt", arguments: { action: "delete", person_name: "Budi" } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    // Both kept: edit is not a delete, and there's only 1 delete
+    expect(validated.toolCalls.length).toBe(2);
   });
 });

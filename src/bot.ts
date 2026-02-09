@@ -6,6 +6,7 @@ import { handleReset } from "./handlers/reset";
 import { handleRekap } from "./handlers/rekap";
 import { handleTarget } from "./handlers/target";
 import { handleHutang } from "./handlers/hutang";
+import { handlePhoto } from "./handlers/photo";
 
 export function createBot(env: Env) {
   const bot = new Bot(env.BOT_TOKEN, {
@@ -21,6 +22,9 @@ export function createBot(env: Env) {
   bot.command("rekap", (ctx) => handleRekap(ctx, env));
   bot.command("target", (ctx) => handleTarget(ctx, env));
   bot.command("hutang", (ctx) => handleHutang(ctx, env));
+
+  // === IMAGE-TO-TEXT (OCR.space + AI) ===
+  bot.on("message:photo", (ctx) => handlePhoto(ctx, env));
 
   // === AI PIPELINE (natural language) ===
   // Catch-all: semua pesan teks tanpa slash → AI (~42 neurons)

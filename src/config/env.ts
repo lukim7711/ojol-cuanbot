@@ -5,4 +5,6 @@ export interface Env {
   AI: Ai;
   /** Optional: Telegram webhook secret for request verification */
   WEBHOOK_SECRET?: string;
+  /** Optional: OCR.space API key for image-to-text feature */
+  OCR_API_KEY?: string;
 }

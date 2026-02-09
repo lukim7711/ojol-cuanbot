@@ -1,3 +1,12 @@
+/**
+ * Tool Definitions — Compressed (Fase E)
+ *
+ * Changes from Fase D:
+ * - record_debt: trimmed 12 → 5 properties (removed rarely-used fields)
+ * - get_summary: removed custom period (custom_start, custom_end)
+ * - set_obligation: removed note field
+ * - All descriptions shortened
+ */
 export const TOOLS = [
   {
     type: "function" as const,
@@ -38,16 +47,8 @@ export const TOOLS = [
           type: { type: "string", enum: ["hutang", "piutang"] },
           person_name: { type: "string" },
           amount: { type: "integer" },
-          remaining: { type: "integer" },
-          note: { type: "string" },
-          due_date: { type: "string" },
           due_date_days: { type: "integer" },
-          recurring_day: { type: "integer" },
-          interest_rate: { type: "number" },
-          interest_type: { type: "string", enum: ["none", "flat", "daily"] },
-          tenor_months: { type: "integer" },
-          installment_amount: { type: "integer" },
-          installment_freq: { type: "string", enum: ["daily", "weekly", "monthly"] },
+          note: { type: "string" },
         },
         required: ["type", "person_name", "amount"],
       },
@@ -72,13 +73,11 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_summary",
-      description: "Tampilkan rekap keuangan.",
+      description: "Rekap keuangan.",
       parameters: {
         type: "object",
         properties: {
-          period: { type: "string", enum: ["today", "yesterday", "this_week", "this_month", "custom"] },
-          custom_start: { type: "string" },
-          custom_end: { type: "string" },
+          period: { type: "string", enum: ["today", "yesterday", "this_week", "this_month"] },
         },
         required: ["period"],
       },
@@ -88,7 +87,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_debts",
-      description: "Lihat daftar hutang/piutang aktif.",
+      description: "Daftar hutang/piutang aktif.",
       parameters: {
         type: "object",
         properties: {
@@ -102,7 +101,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_debt_history",
-      description: "Lihat riwayat pembayaran hutang.",
+      description: "Riwayat pembayaran hutang.",
       parameters: {
         type: "object",
         properties: {
@@ -132,7 +131,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "ask_clarification",
-      description: "Tanya balik jika pesan ambigu.",
+      description: "Tanya balik jika ambigu.",
       parameters: {
         type: "object",
         properties: {
@@ -146,7 +145,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_debt",
-      description: "Edit atau hapus hutang/piutang.",
+      description: "Edit/hapus hutang-piutang.",
       parameters: {
         type: "object",
         properties: {
@@ -162,7 +161,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_daily_target",
-      description: "Tampilkan target harian.",
+      description: "Target harian.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -170,14 +169,13 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_obligation",
-      description: "Catat kewajiban rutin (cicilan, kontrakan, dll).",
+      description: "Catat kewajiban rutin.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string" },
           amount: { type: "integer" },
           frequency: { type: "string", enum: ["daily", "weekly", "monthly"] },
-          note: { type: "string" },
         },
         required: ["name", "amount"],
       },
@@ -187,7 +185,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_goal",
-      description: "Set goal menabung untuk beli sesuatu.",
+      description: "Goal menabung.",
       parameters: {
         type: "object",
         properties: {
@@ -203,7 +201,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "set_saving",
-      description: "Set tabungan minimum harian.",
+      description: "Tabungan minimum harian.",
       parameters: {
         type: "object",
         properties: {
@@ -217,7 +215,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_obligation",
-      description: "Hapus atau selesaikan kewajiban.",
+      description: "Hapus/selesaikan kewajiban.",
       parameters: {
         type: "object",
         properties: {
@@ -232,7 +230,7 @@ export const TOOLS = [
     type: "function" as const,
     function: {
       name: "edit_goal",
-      description: "Batalkan atau selesaikan goal.",
+      description: "Batalkan/selesaikan goal.",
       parameters: {
         type: "object",
         properties: {

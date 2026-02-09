@@ -15,17 +15,16 @@ import { formatReply } from "../utils/formatter";
  * Handle /target command — show today's financial target
  */
 export async function handleTarget(ctx: Context, env: Env): Promise<void> {
-  const userId = ctx.from?.id;
-
-  if (!userId) {
+  if (!ctx.from) {
     await ctx.reply("⚠️ User ID tidak ditemukan.");
     return;
   }
 
   try {
-    console.log(`[Cmd] /target from user ${userId}`);
+    const telegramId = String(ctx.from.id);
+    console.log(`[Cmd] /target from user ${telegramId}`);
 
-    const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
+    const user = await getOrCreateUser(env.DB, telegramId, ctx.from.first_name ?? "Driver");
     const result = await getDailyTarget(env.DB, user, {});
 
     // Use formatReply to format the result (matches AI pipeline behavior)

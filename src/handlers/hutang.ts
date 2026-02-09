@@ -8,25 +8,24 @@
 import { Context } from "grammy";
 import { Env } from "../config/env";
 import { getOrCreateUser } from "../services/user";
-import { getDebtsList } from "../services/debt"; // Correct function name
+import { getDebtsList } from "../services/debt";
 import { formatReply } from "../utils/formatter";
 
 /**
  * Handle /hutang command — show all debts and receivables
  */
 export async function handleHutang(ctx: Context, env: Env): Promise<void> {
-  const userId = ctx.from?.id;
-
-  if (!userId) {
+  if (!ctx.from) {
     await ctx.reply("⚠️ User ID tidak ditemukan.");
     return;
   }
 
   try {
-    console.log(`[Cmd] /hutang from user ${userId}`);
+    const telegramId = String(ctx.from.id);
+    console.log(`[Cmd] /hutang from user ${telegramId}`);
 
-    const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
-    
+    const user = await getOrCreateUser(env.DB, telegramId, ctx.from.first_name ?? "Driver");
+
     // Query all debts (type: "all" returns both hutang and piutang)
     const result = await getDebtsList(env.DB, user, { type: "all" });
 

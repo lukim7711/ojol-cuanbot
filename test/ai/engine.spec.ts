@@ -150,7 +150,7 @@ describe("validateToolCalls", () => {
     expect(validated.toolCalls.length).toBe(1);
   });
 
-  it("clamps invalid debt amount", () => {
+  it("removes debt tool call with invalid amount (negative)", () => {
     const result: AIResult = {
       toolCalls: [
         {
@@ -162,7 +162,39 @@ describe("validateToolCalls", () => {
     };
 
     const validated = validateToolCalls(result);
-    expect(validated.toolCalls[0].arguments.amount).toBe(1);
+    // Invalid amount → tool call removed entirely (not clamped)
+    expect(validated.toolCalls.length).toBe(0);
+  });
+
+  it("removes pay_debt with zero amount (spurious call)", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "edit_obligation", arguments: { action: "done", name: "gopay" } },
+        { name: "pay_debt", arguments: { person_name: "gopay", amount: 0 } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    // pay_debt with amount=0 should be removed, edit_obligation kept
+    expect(validated.toolCalls.length).toBe(1);
+    expect(validated.toolCalls[0].name).toBe("edit_obligation");
+  });
+
+  it("keeps debt tool call with valid amount", () => {
+    const result: AIResult = {
+      toolCalls: [
+        {
+          name: "record_debt",
+          arguments: { type: "hutang", person_name: "Budi", amount: 500000 },
+        },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls.length).toBe(1);
+    expect(validated.toolCalls[0].arguments.amount).toBe(500000);
   });
 
   it("passes through valid tool calls unchanged", () => {

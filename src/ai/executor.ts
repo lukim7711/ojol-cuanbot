@@ -2,10 +2,14 @@
  * Executor — Llama Scout Model (Single Model)
  * Handles BOTH slang conversion AND function calling in one call.
  * Also handles casual chat in non-tool mode.
+ *
+ * Fase F: Accepts dynamic tool subset from toolRouter instead of
+ *         always sending all 15 tools.
  */
 
 import { Env } from "../config/env";
 import { TOOLS } from "./tools";
+import { selectToolsForMessage } from "./toolRouter";
 import { buildUnifiedPrompt, buildCasualChatPrompt } from "./prompt";
 import { AIResult, ConversationMessage, parseAIResponse, stripThinkingTags } from "./parser";
 import { getWIBDateString } from "./utils";
@@ -16,7 +20,10 @@ const LLAMA_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
  * Execute function calling with Llama Scout.
  * Input is RAW user text (slang included) — slang table in system prompt handles conversion.
  *
- * @param enhanced - If true, adds explicit conversion hint for retry attempts
+ * Fase F: Uses selectToolsForMessage() to send only relevant tools.
+ *         On enhanced retry, falls back to ALL tools for safety.
+ *
+ * @param enhanced - If true, sends ALL tools + explicit conversion hint
  */
 export async function executeWithLlama(
   env: Env,
@@ -37,11 +44,28 @@ export async function executeWithLlama(
     { role: "user" as const, content: userContent },
   ];
 
-  console.log(`[FC] Sending to Llama Scout: "${originalText}"${enhanced ? " (enhanced retry)" : ""}`);
+  // Fase F: Dynamic tool selection
+  // On first attempt: send only relevant tools (save tokens)
+  // On retry (enhanced): send ALL tools (maximize chance of success)
+  let selectedTools: readonly any[];
+  let routeLabel: string;
+
+  if (enhanced) {
+    selectedTools = TOOLS;
+    routeLabel = "ALL (retry)";
+  } else {
+    const route = selectToolsForMessage(originalText);
+    selectedTools = route.tools;
+    routeLabel = route.label;
+  }
+
+  console.log(
+    `[FC] Sending to Llama Scout: "${originalText}" | tools: ${routeLabel} (${selectedTools.length})${enhanced ? " (enhanced retry)" : ""}`
+  );
 
   const response = (await env.AI.run(LLAMA_MODEL as any, {
     messages,
-    tools: TOOLS as any,
+    tools: selectedTools as any,
     tool_choice: "required",
   })) as any;
 
@@ -50,10 +74,12 @@ export async function executeWithLlama(
   const result = parseAIResponse(response);
 
   if (result.toolCalls.length === 0) {
-    console.warn(`[FC] 0 tool calls${enhanced ? " even on retry" : ""}. tool_choice=required.`);
+    console.warn(
+      `[FC] 0 tool calls (route: ${routeLabel})${enhanced ? " even on retry" : ""}. tool_choice=required.`
+    );
   } else {
     console.log(
-      `[FC] Success: ${result.toolCalls.length} tool call(s)${enhanced ? " on retry" : " on first attempt"}`
+      `[FC] Success: ${result.toolCalls.length} tool call(s) (route: ${routeLabel})${enhanced ? " on retry" : " on first attempt"}`
     );
   }
 

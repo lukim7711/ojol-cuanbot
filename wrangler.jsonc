@@ -20,6 +20,12 @@
 		"database_id": "abb3e1b3-d4c4-4469-a947-f6780ab39f78"
 		}
 	],
+	"kv_namespaces": [
+		{
+			"binding": "RATE_LIMIT",
+			"id": "d0d9862513b54c20a450f9e441856eb4"
+		}
+	],
 	"ai": {
 		"binding": "AI"
 	},

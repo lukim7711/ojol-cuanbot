@@ -9,26 +9,35 @@ import { isRateLimited } from "../middleware/rateLimit";
 import { sanitizeUserInput, hasInjectionPatterns } from "../middleware/inputGuard";
 
 /**
- * In-memory set to track recently processed Telegram message IDs.
+ * Check if a message was already processed using KV.
  * Prevents duplicate processing when Telegram retries webhook
- * after timeout (Worker processed the message but ctx.reply() timed out).
+ * after timeout (Worker processed but ctx.reply() timed out).
+ *
+ * KV key format: dedup:{chatId}:{messageId}
+ * KV TTL: 300 seconds (5 minutes) — auto-cleanup by Cloudflare
  */
-const processedMessages = new Set<string>();
-const MAX_PROCESSED_CACHE = 1000;
+const DEDUP_TTL_SECONDS = 300;
 
-function getMessageKey(chatId: number | undefined, messageId: number | undefined): string | null {
-  if (!chatId || !messageId) return null;
-  return `${chatId}:${messageId}`;
-}
+async function isDuplicate(
+  kv: KVNamespace,
+  chatId: number | undefined,
+  messageId: number | undefined
+): Promise<boolean> {
+  if (!chatId || !messageId) return false;
 
-function cleanupProcessedCache(): void {
-  if (processedMessages.size > MAX_PROCESSED_CACHE) {
-    const entries = Array.from(processedMessages);
-    const removeCount = Math.floor(entries.length / 2);
-    for (let i = 0; i < removeCount; i++) {
-      processedMessages.delete(entries[i]);
-    }
-    console.log(`[Dedup] Cleaned cache: removed ${removeCount}, remaining ${processedMessages.size}`);
+  const key = `dedup:${chatId}:${messageId}`;
+
+  try {
+    const existing = await kv.get(key);
+    if (existing) return true;
+
+    // Mark as processed with TTL
+    await kv.put(key, "1", { expirationTtl: DEDUP_TTL_SECONDS });
+    return false;
+  } catch (error) {
+    // If KV fails, allow the request (fail-open)
+    console.error("[Dedup] KV error, failing open:", error);
+    return false;
   }
 }
 
@@ -59,23 +68,23 @@ export async function handleMessage(
   if (!text || !ctx.from) return;
 
   // ============================================
-  // IDEMPOTENCY GUARD
+  // IDEMPOTENCY GUARD (KV-based)
   // ============================================
-  const messageKey = getMessageKey(ctx.chat?.id, ctx.message?.message_id);
-  if (messageKey) {
-    if (processedMessages.has(messageKey)) {
-      console.warn(`[Dedup] Skipping duplicate message: ${messageKey}`);
-      return;
-    }
-    processedMessages.add(messageKey);
-    cleanupProcessedCache();
+  const duplicate = await isDuplicate(
+    env.RATE_LIMIT,
+    ctx.chat?.id,
+    ctx.message?.message_id
+  );
+  if (duplicate) {
+    console.warn(`[Dedup] Skipping duplicate message: ${ctx.chat?.id}:${ctx.message?.message_id}`);
+    return;
   }
 
   // ============================================
-  // RATE LIMIT CHECK
+  // RATE LIMIT CHECK (KV-based)
   // ============================================
   const telegramId = String(ctx.from.id);
-  if (isRateLimited(telegramId)) {
+  if (await isRateLimited(env.RATE_LIMIT, telegramId)) {
     try {
       await ctx.reply("⏳ Sabar bos, kebanyakan pesan nih. Tunggu bentar ya.");
     } catch (_) {}
@@ -105,8 +114,6 @@ export async function handleMessage(
     const user = await getOrCreateUser(env.DB, telegramId, displayName);
 
     // 2. Get recent conversation (3 messages) for context
-    //    3 turns is sufficient — edits reference 1-2 messages back max.
-    //    Reduced from 6 to save ~200 tokens per request.
     const history = await getRecentConversation(env.DB, user.id, 3);
     const conversationHistory = history.map((h: any) => ({
       role: h.role as "user" | "assistant",

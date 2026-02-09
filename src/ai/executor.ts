@@ -1,42 +1,43 @@
 /**
- * Executor Stage — Llama Scout Model
- * Stage 2: Reliable function calling based on normalized input.
- * Uses tool_choice "required" — all messages here MUST produce a tool call.
+ * Executor — Llama Scout Model (Single Model)
+ * Handles BOTH slang conversion AND function calling in one call.
+ * Also handles casual chat in non-tool mode.
  */
 
 import { Env } from "../config/env";
 import { TOOLS } from "./tools";
-import { buildExecutorPrompt } from "./prompt";
-import { AIResult, ConversationMessage, parseAIResponse } from "./parser";
+import { buildUnifiedPrompt, buildCasualChatPrompt } from "./prompt";
+import { AIResult, ConversationMessage, parseAIResponse, stripThinkingTags } from "./parser";
 import { getWIBDateString } from "./utils";
 
 const LLAMA_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 
 /**
- * Stage 2: Llama Scout Executor — reliable function calling
- * Uses tool_choice "required" directly because:
- * 1. Casual chat is already filtered before reaching this stage
- * 2. Scout 17B ignores "auto" ~90% of the time (wastes a retry)
- * 3. Every message here MUST produce a tool call
+ * Execute function calling with Llama Scout.
+ * Input is RAW user text (slang included) — slang table in system prompt handles conversion.
+ *
+ * @param enhanced - If true, adds explicit conversion hint for retry attempts
  */
 export async function executeWithLlama(
   env: Env,
   normalizedText: string,
   originalText: string,
-  conversationHistory: ConversationMessage[]
+  conversationHistory: ConversationMessage[],
+  enhanced: boolean = false
 ): Promise<AIResult> {
   const currentDate = getWIBDateString();
 
+  const userContent = enhanced
+    ? `PENTING: Konversi slang uang dulu (rb=×1000, goceng=5000, gocap=50000, ceban=10000, seceng=1000, jt=×1000000), lalu panggil tool yang sesuai.\n\n"${originalText}"`
+    : originalText;
+
   const messages = [
-    { role: "system" as const, content: buildExecutorPrompt(currentDate) },
+    { role: "system" as const, content: buildUnifiedPrompt(currentDate) },
     ...conversationHistory,
-    {
-      role: "user" as const,
-      content: `[Pesan asli: "${originalText}"]\n\n${normalizedText}`,
-    },
+    { role: "user" as const, content: userContent },
   ];
 
-  console.log(`[FC] Sending to Llama Scout: "${normalizedText}"`);
+  console.log(`[FC] Sending to Llama Scout: "${originalText}"${enhanced ? " (enhanced retry)" : ""}`);
 
   const response = (await env.AI.run(LLAMA_MODEL as any, {
     messages,
@@ -49,12 +50,46 @@ export async function executeWithLlama(
   const result = parseAIResponse(response);
 
   if (result.toolCalls.length === 0) {
-    console.warn("[FC] 0 tool calls even with tool_choice=required.");
+    console.warn(`[FC] 0 tool calls${enhanced ? " even on retry" : ""}. tool_choice=required.`);
   } else {
     console.log(
-      `[FC] Success: ${result.toolCalls.length} tool call(s) on first attempt`
+      `[FC] Success: ${result.toolCalls.length} tool call(s)${enhanced ? " on retry" : " on first attempt"}`
     );
   }
 
   return result;
+}
+
+/**
+ * Chat mode with Llama Scout — for casual/non-financial messages.
+ * No tools, just conversational response.
+ */
+export async function chatWithLlama(
+  env: Env,
+  userText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<AIResult> {
+  const messages = [
+    { role: "system" as const, content: buildCasualChatPrompt() },
+    ...conversationHistory,
+    { role: "user" as const, content: userText },
+  ];
+
+  console.log(`[Chat] Sending to Llama Scout: "${userText}"`);
+
+  const response = (await env.AI.run(LLAMA_MODEL as any, {
+    messages,
+  })) as any;
+
+  let text =
+    response.choices?.[0]?.message?.content ??
+    response.response ??
+    response.content ??
+    "Halo bos! Ada yang bisa gue bantu? \ud83d\ude0e";
+
+  if (typeof text === "string") {
+    text = stripThinkingTags(text);
+  }
+
+  return { toolCalls: [], textResponse: text || "Halo bos! \ud83d\ude0e" };
 }

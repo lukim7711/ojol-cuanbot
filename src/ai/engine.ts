@@ -1,7 +1,9 @@
 /**
  * AI Engine — Thin Orchestrator
- * Coordinates the dual-model pipeline: Qwen NLU → Llama Scout FC.
- * All heavy logic lives in dedicated modules (nlu, executor, parser, validator).
+ * Coordinates the tiered pipeline:
+ *   Fast path: classifier → skip NLU → Llama Scout FC
+ *   Full path: Qwen NLU → Llama Scout FC
+ * All heavy logic lives in dedicated modules (nlu, executor, parser, validator, classifier).
  */
 
 import { Env } from "../config/env";
@@ -9,6 +11,7 @@ import { AIResult, ConversationMessage } from "./parser";
 import { isCasualChat, validateToolCalls } from "./validator";
 import { normalizeWithQwen, handleCasualChat } from "./nlu";
 import { executeWithLlama } from "./executor";
+import { classifyInput, canSkipNLU } from "./classifier";
 
 // Re-export types and functions used by other modules
 export type { AIResult, ConversationMessage } from "./parser";
@@ -18,7 +21,7 @@ export { isCasualChat, validateToolCalls } from "./validator";
 const AI_PIPELINE_TIMEOUT_MS = 15_000; // 15 seconds
 
 /**
- * MAIN ENTRY POINT — Dual Model Pipeline
+ * MAIN ENTRY POINT — Tiered Model Pipeline
  * Wrapped with timeout and structured error handling.
  */
 export async function runAI(
@@ -54,7 +57,12 @@ export async function runAI(
 }
 
 /**
- * Core pipeline logic — separated from error handling for clarity.
+ * Core pipeline logic — with tiered routing.
+ *
+ * Routing decision tree:
+ *   1. Casual chat? → Single Qwen call (cheapest)
+ *   2. CLEAN/QUERY? → Skip NLU, direct to Llama FC (save ~800-1200 tokens)
+ *   3. SLANG/EDIT/COMPLEX? → Full pipeline: Qwen NLU → Llama FC
  */
 async function runPipeline(
   env: Env,
@@ -63,7 +71,7 @@ async function runPipeline(
   conversationHistory: ConversationMessage[]
 ): Promise<AIResult> {
   // ============================================
-  // FAST PATH: Casual chat → single Qwen call
+  // TIER 0: Casual chat → single Qwen call
   // ============================================
   if (isCasualChat(userText)) {
     console.log("[AI] Casual chat detected. Single Qwen call.");
@@ -71,9 +79,56 @@ async function runPipeline(
   }
 
   // ============================================
-  // PIPELINE: Qwen NLU → Llama Scout FC
+  // CLASSIFY: Determine pipeline tier
   // ============================================
+  const inputClass = classifyInput(userText);
+  console.log(`[AI] Classified: "${userText}" → ${inputClass}`);
 
+  // ============================================
+  // TIER 1: CLEAN/QUERY → skip NLU, direct FC
+  // Saves ~800-1200 tokens per request
+  // ============================================
+  if (canSkipNLU(inputClass)) {
+    console.log(`[AI] Tier 1: Skipping NLU (${inputClass}). Direct to Llama FC.`);
+
+    let result = await executeWithLlama(
+      env,
+      userText,     // pass original text directly (already clean)
+      userText,
+      conversationHistory
+    );
+
+    result = validateToolCalls(result);
+
+    // Fallback check
+    if (result.toolCalls.length === 0 && !result.textResponse) {
+      // Classification might have been wrong — fall through to full pipeline
+      console.warn(`[AI] Tier 1 produced no output for ${inputClass}. Falling back to full pipeline.`);
+      return runFullPipeline(env, userText, conversationHistory);
+    }
+
+    console.log(
+      `[AI] Pipeline done (Tier 1/${inputClass}): ${result.toolCalls.length} tool calls, text: ${result.textResponse ? "yes" : "no"}`
+    );
+
+    return result;
+  }
+
+  // ============================================
+  // TIER 2: SLANG/EDIT/COMPLEX → full pipeline
+  // ============================================
+  console.log(`[AI] Tier 2: Full pipeline (${inputClass}). Qwen NLU → Llama FC.`);
+  return runFullPipeline(env, userText, conversationHistory);
+}
+
+/**
+ * Full dual-model pipeline: Qwen NLU → Llama Scout FC
+ */
+async function runFullPipeline(
+  env: Env,
+  userText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<AIResult> {
   // Stage 1: Qwen normalizes Indonesian slang (NO history — current msg only)
   const normalized = await normalizeWithQwen(env, userText);
 
@@ -96,7 +151,7 @@ async function runPipeline(
   }
 
   console.log(
-    `[AI] Pipeline done: ${result.toolCalls.length} tool calls, text: ${result.textResponse ? "yes" : "no"}`
+    `[AI] Pipeline done (Tier 2): ${result.toolCalls.length} tool calls, text: ${result.textResponse ? "yes" : "no"}`
   );
 
   return result;

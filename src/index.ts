@@ -1,14 +1,6 @@
 /**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
+ * CuanBot — Cloudflare Worker Entry Point
+ * Handles webhook verification, health checks, and bot routing.
  */
 
 import { createBot } from "./bot";
@@ -27,8 +19,26 @@ export default {
 
     // Webhook handler (POST from Telegram)
     if (request.method === "POST") {
-      const bot = createBot(env);
-      return bot.handleWebhook(request);
+      // ── Webhook Secret Verification ──
+      // Telegram sends X-Telegram-Bot-Api-Secret-Token header if secret_token
+      // was set via setWebhook. Reject unauthorized requests.
+      if (env.WEBHOOK_SECRET) {
+        const headerSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+        if (headerSecret !== env.WEBHOOK_SECRET) {
+          console.warn("[Security] Invalid webhook secret. Rejecting request.");
+          return new Response("Unauthorized", { status: 401 });
+        }
+      }
+
+      try {
+        const bot = createBot(env);
+        return await bot.handleWebhook(request);
+      } catch (error) {
+        // Global safety net — never let the worker crash unhandled
+        console.error("[Worker] Unhandled error in webhook handler:", error);
+        // Return 200 to Telegram so it doesn't retry endlessly
+        return new Response("OK", { status: 200 });
+      }
     }
 
     return new Response("Method not allowed", { status: 405 });

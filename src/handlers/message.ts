@@ -5,6 +5,7 @@ import { getOrCreateUser } from "../services/user";
 import { processToolCalls } from "../services/router";
 import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
+import { isRateLimited } from "../middleware/rateLimit";
 
 /**
  * In-memory set to track recently processed Telegram message IDs.
@@ -69,8 +70,18 @@ export async function handleMessage(
     cleanupProcessedCache();
   }
 
+  // ============================================
+  // RATE LIMIT CHECK
+  // ============================================
+  const telegramId = String(ctx.from.id);
+  if (isRateLimited(telegramId)) {
+    try {
+      await ctx.reply("⏳ Sabar bos, kebanyakan pesan nih. Tunggu bentar ya.");
+    } catch (_) {}
+    return;
+  }
+
   try {
-    const telegramId = String(ctx.from.id);
     const displayName = ctx.from.first_name ?? "Driver";
 
     // 1. Get or create user

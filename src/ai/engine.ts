@@ -14,8 +14,12 @@ import { executeWithLlama } from "./executor";
 export type { AIResult, ConversationMessage } from "./parser";
 export { isCasualChat, validateToolCalls } from "./validator";
 
+/** AI pipeline timeout — prevents hung Workers AI calls from blocking the entire request */
+const AI_PIPELINE_TIMEOUT_MS = 15_000; // 15 seconds
+
 /**
  * MAIN ENTRY POINT — Dual Model Pipeline
+ * Wrapped with timeout and structured error handling.
  */
 export async function runAI(
   env: Env,
@@ -25,6 +29,39 @@ export async function runAI(
 ): Promise<AIResult> {
   console.log(`[AI] Pipeline start for: "${userText}"`);
 
+  try {
+    // Wrap entire pipeline with timeout
+    return await withTimeout(
+      runPipeline(env, userId, userText, conversationHistory),
+      AI_PIPELINE_TIMEOUT_MS
+    );
+  } catch (error) {
+    // Structured error handling — never let AI errors crash the handler
+    if (error instanceof Error && error.message === "AI_PIPELINE_TIMEOUT") {
+      console.error(`[AI] Pipeline timed out after ${AI_PIPELINE_TIMEOUT_MS}ms for: "${userText}"`);
+      return {
+        toolCalls: [],
+        textResponse: "⏳ Wah lama banget nih prosesnya. Coba kirim ulang ya bos.",
+      };
+    }
+
+    console.error("[AI] Pipeline error:", error);
+    return {
+      toolCalls: [],
+      textResponse: "⚠️ Maaf bos, otak gue lagi error. Coba lagi ya.",
+    };
+  }
+}
+
+/**
+ * Core pipeline logic — separated from error handling for clarity.
+ */
+async function runPipeline(
+  env: Env,
+  userId: number,
+  userText: string,
+  conversationHistory: ConversationMessage[]
+): Promise<AIResult> {
   // ============================================
   // FAST PATH: Casual chat → single Qwen call
   // ============================================
@@ -63,4 +100,26 @@ export async function runAI(
   );
 
   return result;
+}
+
+/**
+ * Promise timeout wrapper.
+ * Rejects with AI_PIPELINE_TIMEOUT if promise doesn't resolve within ms.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("AI_PIPELINE_TIMEOUT"));
+    }, ms);
+
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
 }

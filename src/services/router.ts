@@ -14,6 +14,31 @@ import {
   getIncomeProgress,
 } from "./target";
 import { formatTargetProgress } from "../utils/formatter";
+import { getPendingDelete, setPendingDelete, clearPendingDelete } from "./deleteConfirm";
+
+/**
+ * Whitelist of allowed tool names.
+ * Any tool call with a name NOT in this list is silently dropped.
+ * This prevents the AI from calling tools that don't exist
+ * or were injected through prompt manipulation.
+ */
+const ALLOWED_TOOLS = new Set([
+  "record_transactions",
+  "record_debt",
+  "pay_debt",
+  "get_summary",
+  "get_debts",
+  "get_debt_history",
+  "edit_transaction",
+  "ask_clarification",
+  "edit_debt",
+  "get_daily_target",
+  "set_obligation",
+  "set_goal",
+  "set_saving",
+  "edit_obligation",
+  "edit_goal",
+]);
 
 export async function processToolCalls(
   db: D1Database,
@@ -24,7 +49,43 @@ export async function processToolCalls(
   const results: ToolCallResult[] = [];
   let hasIncome = false;
 
+  // ============================================
+  // CHECK: Is this a confirmation reply? ("ya" / "batal")
+  // ============================================
+  const lowerSource = sourceText.toLowerCase().trim();
+  const pending = getPendingDelete(String(user.id));
+
+  if (pending) {
+    if (lowerSource === "ya" || lowerSource === "iya" || lowerSource === "yes" || lowerSource === "y") {
+      // User confirmed — execute the pending delete
+      clearPendingDelete(String(user.id));
+
+      if (pending.type === "transaction") {
+        results.push(await editOrDeleteTransaction(db, user, pending.args));
+      } else if (pending.type === "debt") {
+        results.push(await editDebt(db, user, pending.args));
+      }
+      return results;
+    } else if (lowerSource === "batal" || lowerSource === "cancel" || lowerSource === "tidak" || lowerSource === "no" || lowerSource === "n" || lowerSource === "ga" || lowerSource === "gak" || lowerSource === "nggak") {
+      // User cancelled
+      clearPendingDelete(String(user.id));
+      results.push({ type: "clarification", data: null, message: "✅ Oke, dibatalin. Data lo aman." });
+      return results;
+    } else {
+      // User sent something else — clear pending and process normally
+      clearPendingDelete(String(user.id));
+    }
+  }
+
   for (const call of toolCalls) {
+    // ============================================
+    // SECURITY: Block unknown/injected tool names
+    // ============================================
+    if (!ALLOWED_TOOLS.has(call.name)) {
+      console.warn(`[Security] Blocked unknown tool call: "${call.name}". Skipping.`);
+      continue;
+    }
+
     switch (call.name) {
       case "record_transactions": {
         const result = await recordTransactions(db, user, call.arguments, sourceText);
@@ -51,17 +112,53 @@ export async function processToolCalls(
         results.push(await getDebtsList(db, user, call.arguments));
         break;
 
-      case "edit_transaction":
-        results.push(await editOrDeleteTransaction(db, user, call.arguments));
+      case "edit_transaction": {
+        // ============================================
+        // DELETE CONFIRMATION: Ask before deleting
+        // ============================================
+        if (call.arguments.action === "delete") {
+          // Store pending delete, ask for confirmation
+          setPendingDelete(String(user.id), {
+            type: "transaction",
+            args: call.arguments,
+            description: call.arguments.target || "transaksi terakhir",
+          });
+          results.push({
+            type: "clarification",
+            data: null,
+            message: `🗑️ Mau hapus transaksi <b>${call.arguments.target || "terakhir"}</b>?\n\nBalas <b>ya</b> untuk konfirmasi atau <b>batal</b> untuk cancel.`,
+          });
+        } else {
+          // Edit (not delete) — no confirmation needed
+          results.push(await editOrDeleteTransaction(db, user, call.arguments));
+        }
         break;
+      }
 
       case "ask_clarification":
         results.push({ type: "clarification", data: null, message: call.arguments.message });
         break;
 
-      case "edit_debt":
-        results.push(await editDebt(db, user, call.arguments));
+      case "edit_debt": {
+        // ============================================
+        // DELETE CONFIRMATION: Ask before deleting debt
+        // ============================================
+        if (call.arguments.action === "delete") {
+          setPendingDelete(String(user.id), {
+            type: "debt",
+            args: call.arguments,
+            description: call.arguments.person_name || "hutang",
+          });
+          results.push({
+            type: "clarification",
+            data: null,
+            message: `🗑️ Mau hapus hutang <b>${call.arguments.person_name || ""}</b>?\n\nBalas <b>ya</b> untuk konfirmasi atau <b>batal</b> untuk cancel.`,
+          });
+        } else {
+          results.push(await editDebt(db, user, call.arguments));
+        }
         break;
+      }
 
       case "get_daily_target":
         results.push(await getDailyTarget(db, user));

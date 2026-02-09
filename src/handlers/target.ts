@@ -9,7 +9,7 @@ import { Context } from "grammy";
 import { Env } from "../config/env";
 import { getOrCreateUser } from "../services/user";
 import { getDailyTarget } from "../services/target";
-import { formatDailyTarget } from "../utils/formatter";
+import { formatReply } from "../utils/formatter";
 
 /**
  * Handle /target command — show today's financial target
@@ -25,14 +25,11 @@ export async function handleTarget(ctx: Context, env: Env): Promise<void> {
   try {
     console.log(`[Cmd] /target from user ${userId}`);
 
-    // Get user object
     const user = await getOrCreateUser(env.DB, userId, ctx.from?.first_name);
-
-    // Call service with correct signature
     const result = await getDailyTarget(env.DB, user, {});
 
-    // Format response
-    const response = formatDailyTarget(result.data);
+    // Use formatReply to format the result (matches AI pipeline behavior)
+    const response = formatReply([result], null);
 
     await ctx.reply(response, { parse_mode: "HTML" });
   } catch (error) {

@@ -8,15 +8,32 @@
  *
  * KV key format: rl:{userId}
  * KV value: JSON { count: number, start: number (epoch seconds) }
- * KV expiration: absolute epoch = start + WINDOW_SECONDS
+ * KV expiration: absolute epoch = start + WINDOW_SECONDS (min now+60)
+ *
+ * Bug #10 fix: Cloudflare KV requires `expiration` to be at least
+ * 60 seconds in the future. When the window has < 60s remaining,
+ * `data.start + WINDOW_SECONDS` could be < now + 60 → KV rejects.
+ * Fix: Use Math.max to ensure expiration is always valid.
  */
 
 const MAX_MESSAGES = 30;
 const WINDOW_SECONDS = 60;
 
+/** Cloudflare KV minimum: expiration must be at least this many seconds in the future */
+const KV_MIN_FUTURE_SECONDS = 60;
+
 interface RateLimitEntry {
   count: number;
   start: number; // epoch seconds
+}
+
+/**
+ * Calculate a valid KV expiration timestamp.
+ * Ensures it's always at least KV_MIN_FUTURE_SECONDS from now.
+ */
+function safeExpiration(windowEnd: number): number {
+  const now = Math.floor(Date.now() / 1000);
+  return Math.max(windowEnd, now + KV_MIN_FUTURE_SECONDS);
 }
 
 /**
@@ -40,7 +57,7 @@ export async function isRateLimited(
     if (!data || now - data.start >= WINDOW_SECONDS) {
       const windowStart = now;
       await kv.put(key, JSON.stringify({ count: 1, start: windowStart }), {
-        expiration: windowStart + WINDOW_SECONDS,
+        expiration: safeExpiration(windowStart + WINDOW_SECONDS),
       });
       return false;
     }
@@ -53,11 +70,11 @@ export async function isRateLimited(
       return true;
     }
 
-    // Increment counter, keep same absolute expiration
+    // Increment counter, keep same window expiration
     await kv.put(
       key,
       JSON.stringify({ count: data.count + 1, start: data.start }),
-      { expiration: data.start + WINDOW_SECONDS }
+      { expiration: safeExpiration(data.start + WINDOW_SECONDS) }
     );
     return false;
   } catch (error) {

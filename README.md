@@ -33,7 +33,7 @@ Kirim screenshot riwayat order Shopee — bot otomatis baca semua transaksi:
 ```
 - ShopeeFood + SPX (paket marketplace) dikenali otomatis
 - 0 panggilan AI — pure regex, 0ms parse time
-- Format lain (struk, catatan tangan) → AI fallback
+- Format lain → AI fallback
 
 ### 💸 Hutang & Piutang
 ```
@@ -41,7 +41,7 @@ Kirim screenshot riwayat order Shopee — bot otomatis baca semua transaksi:
 "Andi bayar 100rb"
 "riwayat hutang Andi"
 ```
-- Jatuh tempo, bunga (flat/daily), cicilan
+- Jatuh tempo, bunga, cicilan
 - Overdue detection + urgency sorting
 - Riwayat pembayaran per orang
 
@@ -64,6 +64,7 @@ Bot hitung berapa yang harus dicapai hari ini:
 "hapus yang rokok"
 "yang terakhir salah, harusnya 250rb"
 ```
+2-step delete confirmation untuk keamanan.
 
 ---
 
@@ -88,12 +89,11 @@ Semua command **zero AI** — langsung query database, 0 neurons.
 |-------|----------|
 | Runtime | Cloudflare Workers (serverless, edge) |
 | Bot | grammY (TypeScript, webhook mode) |
-| AI NLU | Qwen3-30B-A3B (normalize Indonesian slang) |
-| AI FC | Llama 3.3 70B (function calling) |
+| AI | Llama 4 Scout 17B (single model: slang + function calling) |
 | OCR | OCR.space Engine 2 |
 | Parser | Regex-based (Shopee: food + SPX) |
 | Database | Cloudflare D1 (SQLite) |
-| KV | Cloudflare KV (rate limit, dedup) |
+| KV | Cloudflare KV (rate limit, dedup, daily counter) |
 | Tests | Vitest — **332 tests** |
 | CI/CD | GitHub Actions (test → migrate → deploy) |
 
@@ -105,11 +105,11 @@ Semua command **zero AI** — langsung query database, 0 neurons.
          ┌─────────────────────┼─────────────────────┐
          │                     │                     │
      /command              text msg              photo msg
-     (zero AI)           (dual model)          (OCR pipeline)
+     (zero AI)           (single model)        (OCR pipeline)
          │                     │                     │
-     Direct DB          Qwen → Llama          OCR.space → Parser
-                               │                     │
-                          Tool Calls            Known? → DB
+     Direct DB          Llama 4 Scout          OCR.space → Parser
+                        (slang table in             │
+                         prompt + FC)          Known? → DB
                                │               Unknown? → AI
                                │                     │
                           Service Router ←────────────┘
@@ -117,16 +117,20 @@ Semua command **zero AI** — langsung query database, 0 neurons.
                           Cloudflare D1
 ```
 
-### Dual Model Pipeline
-Kenapa 2 model?
-- **Qwen** paham slang Indonesia (goceng, gocap, ceban) tapi lemah function calling
-- **Llama** kuat function calling tapi tidak paham slang
-- Gabungan: slang accuracy ~95% + FC reliability ~95% = **overall ~90%+**
+### Single Model Pipeline
+Kenapa 1 model saja?
+- **Llama 4 Scout** cukup kuat handle slang Indonesia via tabel di system prompt
+- Function calling reliable dalam satu panggilan
+- Latency lebih rendah (1 AI call vs 2 sequential)
+- Complexity pipeline berkurang signifikan
+
+### Dynamic Tool Selection (Fase F)
+Regex pre-filter kirim hanya 4-6 tools (dari 15) per request → hemat tokens.
 
 ### Local Parser (Shopee)
 Kenapa regex, bukan AI?
 - Screenshot Shopee format konsisten → regex cukup
-- **0ms** parse (vs 5-7s AI) → 7.5x lebih cepat
+- **0ms** parse (vs 3-5s AI) → jauh lebih cepat
 - **0 AI calls** → hemat daily neurons budget
 - 3-pass: ShopeeFood → SPX → fallback
 
@@ -138,7 +142,8 @@ Kenapa regex, bukan AI?
 src/
 ├── index.ts          # Worker entry
 ├── bot.ts            # grammY setup + command routing
-├── ai/               # Dual model pipeline (engine, prompts, tools)
+├── ai/               # Single model pipeline (engine, executor, parser, prompt,
+│                     #   toolRouter, tools, utils, validator)
 ├── config/           # Environment types
 ├── db/               # Repository layer (all SQL queries)
 ├── handlers/         # Command + message + photo handlers
@@ -160,7 +165,7 @@ test/                 # 332 tests mirroring src/ structure
 - Node.js 18+
 - Cloudflare account (free tier)
 - Telegram Bot token (from @BotFather)
-- OCR.space API key (free tier)
+- OCR.space API key (free tier, optional)
 
 ### Setup
 ```bash
@@ -187,13 +192,13 @@ npx wrangler deploy
 ### CI/CD
 - **CI**: Tests run on every push/PR to `main`
 - **CD**: Push to `main` → test → migrate D1 → deploy worker
-- Zero terminal lokal needed for deployment workflow
+- Zero terminal lokal needed for deployment
 
 ---
 
 ## 🤖 AI Context
 
-Untuk melanjutkan development di percakapan AI baru, baca [`AI_CONTEXT.md`](./AI_CONTEXT.md) — berisi dokumentasi lengkap arsitektur, schema, fitur, dan workflow development.
+Untuk melanjutkan development di percakapan AI baru, baca [`AI_CONTEXT.md`](./AI_CONTEXT.md) — berisi dokumentasi lengkap arsitektur, schema, fitur, dan workflow.
 
 ```
 "Baca file AI_CONTEXT.md di repo lukim7711/ojol-cuanbot branch main,
@@ -204,10 +209,11 @@ Untuk melanjutkan development di percakapan AI baru, baca [`AI_CONTEXT.md`](./AI
 
 ## 📊 Stats
 
-- **Tests**: 332 (28 files, all pass)
+- **Model**: Llama 4 Scout 17B (single model)
+- **Tests**: 332 (all pass)
 - **Source files**: 30+
 - **Migrations**: 3
-- **AI tools**: 15 function definitions
+- **AI tools**: 15 definitions, 5 groups
 - **Commands**: 7 slash commands
 - **Parsers**: 1 (Shopee: food + SPX)
 

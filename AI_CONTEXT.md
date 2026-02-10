@@ -4,6 +4,8 @@
 > Ketika user memulai percakapan baru dan meminta kamu membaca file ini,
 > gunakan SEMUA informasi di bawah sebagai konteks kerja.
 > Selalu update file ini setelah menambah fitur baru atau melakukan perubahan signifikan.
+>
+> **Last updated**: 2026-02-10 — Single model Llama 4 Scout, Unified Shopee parser, OCR pipeline, 332 tests
 
 ---
 
@@ -11,14 +13,14 @@
 
 **CuanBot** adalah bot Telegram AI untuk manajemen keuangan harian driver ojek online Indonesia.
 
-- **Target user**: Driver ojol (Grab, Gojek, Maxim, dll)
+- **Target user**: Driver ojol (Shopee, Grab, Gojek, Maxim, dll)
 - **Platform**: Telegram Bot
-- **Interaksi**: Chat natural Bahasa Indonesia (informal, slang, singkatan)
+- **Interaksi**: Chat natural Bahasa Indonesia (informal, slang, singkatan) + screenshot foto
 - **Bot username**: @ojol_finance_bot
 - **Bot name**: Ojol Finance Assistant
 
 ### Value Proposition
-Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup dengan chat biasa — tanpa buka app keuangan ribet.
+Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup dengan chat biasa atau kirim screenshot order — tanpa buka app keuangan ribet.
 
 ---
 
@@ -28,193 +30,354 @@ Driver ojol bisa catat pemasukan/pengeluaran, hutang, dan target harian cukup de
 |-------|-----------|--------|
 | Runtime | Cloudflare Workers | Serverless, edge-deployed, entry: `src/index.ts` |
 | Bot Framework | grammY v1.39+ | TypeScript-first, webhook mode |
-| AI/NLP (NLU) | Workers AI — **Qwen3-30B-A3B-FP8** | Stage 1: normalize Indonesian slang → formal text |
-| AI/NLP (FC) | Workers AI — **Llama 3.3 70B Instruct FP8** | Stage 2: reliable function calling on normalized text |
+| AI Model | Workers AI — **Llama 4 Scout 17B 16E Instruct** | Single model: slang conversion + function calling in one call |
+| OCR | OCR.space API (Engine 2) | Extract text from screenshot photos, free 25K req/month |
+| Local Parser | Regex-based (`src/parsers/`) | Bypass AI for known formats (Shopee), 0ms parse time |
 | Database | Cloudflare D1 (SQLite) | Binding: `DB`, name: `cuanbot-db` |
+| KV Store | Cloudflare KV | Binding: `RATE_LIMIT`, for rate limiting + message dedup + daily AI limit + delete confirm |
 | Language | TypeScript strict | tsconfig strict mode |
-| Testing | Vitest + @cloudflare/vitest-pool-workers | Workers-compatible test runner |
+| Testing | Vitest + @cloudflare/vitest-pool-workers | Workers-compatible test runner, **332 tests** |
 | CI/CD | GitHub Actions | CI: test on push/PR; CD: auto migrate D1 + deploy on push to main |
-| Config | wrangler.jsonc | compatibility_date: 2026-02-05 |
+| Config | wrangler.jsonc | compatibility_date: 2026-02-05, nodejs_compat flag |
 
 ### Environment & Secrets
-- `DB` — D1 database binding
-- `AI` — Workers AI binding
-- `TELEGRAM_BOT_TOKEN` — secret
-- `AI_API_KEY` — secret
-- `BOT_INFO` — JSON string di vars
-- `CLOUDFLARE_API_TOKEN` — GitHub Actions secret (for deploy & migration)
-- `CLOUDFLARE_ACCOUNT_ID` — GitHub Actions secret
+
+| Binding/Secret | Type | Purpose |
+|----------------|------|--------|
+| `DB` | D1 Database | Main database (`cuanbot-db`) |
+| `AI` | Workers AI | AI model inference (Llama 4 Scout) |
+| `RATE_LIMIT` | KV Namespace | Rate limiting, message dedup, daily AI call counter, delete confirmation |
+| `BOT_TOKEN` | Secret | Telegram Bot API token |
+| `BOT_INFO` | Var (JSON) | grammY bot info: `{id, is_bot, first_name, username}` |
+| `OCR_API_KEY` | Secret (optional) | OCR.space API key |
+| `WEBHOOK_SECRET` | Secret (optional) | Telegram webhook verification |
+| `CLOUDFLARE_API_TOKEN` | GitHub Secret | For deploy & D1 migration |
+| `CLOUDFLARE_ACCOUNT_ID` | GitHub Secret | Cloudflare account ID |
+
+Defined in: `src/config/env.ts`
 
 ---
 
 ## 3. Arsitektur
 
-### Dual Model Pipeline (Hybrid Architecture)
+### 3.1 Single Model Pipeline (Llama 4 Scout)
+
+> **PENTING**: Project ini TIDAK lagi menggunakan dual model (Qwen + Llama 3.3 70B).
+> Sejak migrasi ke Llama 4 Scout 17B, SATU model menangani semuanya:
+> slang conversion + function calling dalam 1 panggilan.
+> Slang ditangani via tabel slang di system prompt, bukan model NLU terpisah.
 
 ```
-Telegram → Webhook → Cloudflare Worker
+Telegram → Webhook → Cloudflare Worker (src/index.ts)
                          |
-                    grammY Bot
+                    grammY Bot (src/bot.ts)
                          |
-                  Message Handler
-                         |
-                    AI Engine (src/ai/engine.ts)
-                         |
-              ┌──── isCasualChat? ────┐
-              │                       │
-            YES                      NO
-              │                       │
-         Single Qwen call      DUAL MODEL PIPELINE
-         (casual reply)              │
-              │               ┌──────┴──────┐
-              │               │             │
-              │         Stage 1:        Stage 2:
-              │         Qwen NLU        Llama FC
-              │      (normalize slang)  (function calling)
-              │         No history      With history
-              │         No tools        With tools
-              │               │             │
-              │               └──────┬──────┘
-              │                      │
-              │               Stage 3: Validation
-              │               - deepParseArguments
-              │               - maxItems: 10
-              │               - amount range check
-              │               - deduplicate tool calls
-              │                      │
-              └──────────────────────┤
-                                    │
-                    Service Router (src/services/router.ts)
-                    ├── transaction.ts  → record/get transactions
-                    ├── debt.ts         → record/pay/list/history debts
-                    ├── edit.ts         → edit/delete transactions
-                    ├── edit-debt.ts    → edit/delete debts
-                    ├── summary.ts      → rekap keuangan
-                    ├── target.ts       → smart daily target
-                    └── user.ts         → get/create user
-                         |
-                    Repository Layer (src/db/repository.ts, repository-target.ts)
-                         |
-                    Cloudflare D1 (SQLite)
+              ┌──── Route by type ────┐──────────────────┐
+              │                       │                  │
+         /command              message:text          message:photo
+         (zero AI)            (AI pipeline)         (OCR pipeline)
+              │                    │                      │
+         Direct handler      Message Handler         Photo Handler
+         (start, rekap,      (src/handlers/           (src/handlers/
+          target, hutang,     message.ts)              photo.ts)
+          reset)                  │                      │
+              │              ┌── Guards ──┐          See §3.2
+              │              │ KV dedup   │
+              │              │ Rate limit │
+              │              │ Input guard│
+              │              └─────┬──────┘
+              │                    │
+              │            ┌── Fast Path? ──┐
+              │            │ CONFIRM_WORDS  │
+              │            │ + pending KV   │
+              │            └──┬──────┬──────┘
+              │           YES │      │ NO
+              │               │      │
+              │          Skip AI   runAI()
+              │          go to     (src/ai/engine.ts)
+              │          router        │
+              │               │   ┌── isCasualChat? ──┐
+              │               │   │                   │
+              │               │  YES                  NO
+              │               │   │                   │
+              │               │  chatWithLlama()   executeWithLlama()
+              │               │  (no tools,         (with tools,
+              │               │   casual prompt)     unified prompt)
+              │               │       │                   │
+              │               │       │           toolRouter.ts
+              │               │       │           (select 4-5 tools
+              │               │       │            from 15, Fase F)
+              │               │       │                   │
+              │               │       │           Llama 4 Scout
+              │               │       │           @cf/meta/llama-4-scout-17b-16e-instruct
+              │               │       │           (slang table in prompt +
+              │               │       │            function calling)
+              │               │       │                   │
+              │               │       │           validateToolCalls()
+              │               │       │           (maxItems, amount range,
+              │               │       │            dedup by args hash,
+              │               │       │            delete limiter)
+              │               │       │                   │
+              │               │       │           Retry if 0 tool calls
+              │               │       │           (enhanced mode + ALL tools)
+              │               │       │                   │
+              └───────────────┴───────┴───────────────────┤
+                                                          │
+                               Service Router (src/services/router.ts)
+                               ├── transaction.ts  → record income/expense
+                               ├── debt.ts         → record/pay/list/history debts
+                               ├── edit.ts         → edit/delete transactions
+                               ├── edit-debt.ts    → edit/delete debts
+                               ├── summary.ts      → rekap keuangan
+                               ├── target.ts       → smart daily target
+                               ├── deleteConfirm.ts → delete confirmation via KV
+                               └── user.ts         → get/create user
+                                    |
+                               Repository Layer
+                               ├── repository.ts        (core queries)
+                               └── repository-target.ts (target queries)
+                                    |
+                               Cloudflare D1 (SQLite)
 ```
 
-### Why Dual Model?
+### 3.2 Photo Pipeline (OCR → Local Parser → AI Fallback)
 
-| Aspek | Qwen3-30B-A3B | Llama 3.3 70B |
-|-------|---------------|---------------|
-| Indonesian slang | ✅ Paham (goceng, gocap, ceban) | ❌ Gagal total |
-| Function calling | ❌ Unreliable | ✅ Sangat reliable |
-| Role | NLU / Translator | Executor / Function Caller |
-
-Dengan menggabungkan keduanya: **slang accuracy ~95% + FC reliability ~95% = overall ~90%+**
-
-### Flow per message:
-1. User kirim chat di Telegram
-2. grammY menerima via webhook
-3. `/start` → handler `start.ts` (onboarding); `/reset` → handler `reset.ts`; pesan biasa → `message.ts`
-4. `isCasualChat()` check — jika casual (≤4 kata + greeting pattern) → single Qwen call, return
-5. **Stage 1 (Qwen NLU)**: Normalize slang → formal text + explicit Rupiah. NO conversation history, NO tools.
-6. **Stage 2 (Llama FC)**: Parse normalized text → tool calls. WITH conversation history, WITH tools.
-7. **Stage 3 (Validation)**: `deepParseArguments()` (string→array), `validateToolCalls()` (maxItems, amount range, dedup)
-8. Router mengeksekusi tool call → service → repository → D1
-9. Result diformat oleh `formatter.ts` → dikirim balik ke user
-
-### Token Estimation per Request
-
-| Skenario | Qwen (NLU) | Llama (FC) | Total |
-|----------|-----------|-----------|-------|
-| Transaksi normal (tanpa history) | ~1.130 | ~2.605 | **~3.735** |
-| Transaksi + 5 turn history | ~1.130 | ~3.105 | **~4.235** |
-| Casual chat (single Qwen) | ~604 | 0 | **~604** |
-| Worst case — retry | ~1.130 | ~5.224 | **~6.354** |
-
-Komponen terbesar: Tools Schema (37.5%), NLU Prompt (26.2%), Executor Prompt (22.5%).
-
-**Estimasi harian**: ~70.000 tokens/user/hari (20 pesan).
-**Cloudflare free tier**: ~50-100 request/hari (billing per Neurons, bukan tokens).
-
-### CD Pipeline Flow:
 ```
-push to main → Run Tests → Apply D1 Migrations (--remote) → Deploy Worker
+User sends photo
+      │
+  ┌───┴───┐
+  │ Dedup │ KV-based idempotency (5min TTL)
+  └───┬───┘
+      │
+  Download from Telegram API
+      │
+  OCR.space Engine 2 (~1-3s)
+      │
+  cleanOCRForParser(text)
+      │
+  ┌───┴───────────────┐
+  │ tryParseOCR()     │  src/parsers/index.ts
+  │  detectFormat()   │  src/parsers/detector.ts
+  │    ├─ shopee      │  → parseShopee()  (src/parsers/shopee.ts)
+  │    ├─ grab        │  → (not implemented yet)
+  │    ├─ gopay       │  → (not implemented yet)
+  │    └─ unknown     │  → null (fallback to AI)
+  └───┬───────────────┘
+      │
+  ┌───┴───┐
+  │Result?│
+  └───┬───┘
+    YES │                    NO
+      │                      │
+  recordTransactions()    AI Fallback
+  (direct to DB,          (same single-model
+   0 AI calls,             pipeline as text)
+   0ms parse)                  │
+      │                        │
+  Reply with metadata      Reply from AI
+  "Auto-parsed dari
+   Shopee (6 food,
+   3 paket)"
 ```
-- Migration idempotent (D1 tracks via `d1_migrations` table)
-- Jika migration gagal → deploy diskip (fail-fast)
-- Jika tidak ada migration baru → no-op
+
+### 3.3 Shopee Parser Detail (src/parsers/shopee.ts)
+
+Shopee drivers handle BOTH food delivery (ShopeeFood) and package delivery (SPX).
+Both appear in the same order history screen.
+
+```
+Pass 1: SHOPEE_FOOD_REGEX
+  Pattern: time + ShopeeFood (with OCR typo tolerance) + Rp + amount
+  Output:  "ShopeeFood HH:MM"
+  Typos:   ShapeeFood, Shopeefood, shopeeFood, ShuppeFood
+
+Pass 2: SPX_ORDER_REGEX
+  Pattern: time + SPX (Instant|Standard|Express|Ekonomi|Marketplace) + Rp + amount
+  Output:  "SPX HH:MM"
+
+Pass 3: TIME_AMOUNT_REGEX (fallback)
+  Pattern: time + Rp + amount (no platform label)
+  Output:  "Shopee HH:MM"
+
+Dedup: Set<string> by "time:amount" key
+Sort:  Descending by time (latest first)
+Filter: amount >= 1,000 AND <= 10,000,000
+```
+
+### 3.4 Date Detection (src/parsers/index.ts)
+
+```
+OCR header: "09 Feb 2026 ~"
+                │
+    detectDateOffset(text)
+                │
+    Compare to today (WIB/UTC+7)
+                │
+    Return: 0 (today), -1 (yesterday), -2 (2 days ago), etc.
+    Constraint: 0 to -30 days only, future = 0
+```
+
+### 3.5 Why Single Model (bukan Dual Model lagi)?
+
+Project ini awalnya pakai dual model (Qwen NLU + Llama 3.3 70B FC).
+Sekarang sudah **migrasi ke Llama 4 Scout 17B** sebagai single model.
+
+| Aspek | Dual Model (lama) | Single Model (sekarang) |
+|-------|-------------------|------------------------|
+| Model | Qwen3-30B + Llama 3.3 70B | Llama 4 Scout 17B saja |
+| Slang handling | Qwen NLU stage terpisah | Slang table di system prompt |
+| Function calling | Llama 3.3 70B | Llama 4 Scout (sama kuat) |
+| Latency | 2 sequential AI calls | 1 AI call saja |
+| Token usage | ~3,735 per request | Lebih hemat (1 call) |
+| Complexity | 3-stage pipeline | Simple single pipeline |
+
+### 3.6 Token Estimation per Request
+
+| Skenario | Llama 4 Scout | Note |
+|----------|--------------|------|
+| Transaksi normal | ~2,600 | With tool subset (Fase F) |
+| Casual chat | ~600 | No tools, casual prompt |
+| Photo (known format) | 0 | Local parser, bypass AI |
+| Photo (unknown → AI) | ~2,600 | Same as text pipeline |
+| Retry (enhanced) | ~5,200 | ALL 15 tools sent |
+
+### 3.7 Dynamic Tool Selection (Fase F — src/ai/toolRouter.ts)
+
+Regex-based pre-filter that narrows tool "menu" from 15 → 4-6 per request.
+First match wins, order matters.
+
+| Route | Pattern (keywords) | Tools sent |
+|-------|-------------------|------------|
+| QUERY | rekap, daftar, riwayat, target, berapa | 5 tools |
+| EDIT | ubah, hapus, selesai, batal, salah | 5 tools |
+| SETTING | cicilan, kewajiban, goal, nabung | 4 tools |
+| DEBT | hutang, piutang, minjem, bayar | 6 tools |
+| TRANSACTION | \d+, rb, goceng, makan, bensin | 4 tools |
+| ALL (fallback) | no pattern match | 15 tools |
+
+Every group includes `ask_clarification` as safe fallback.
+On retry (enhanced mode), ALL 15 tools are sent.
+
+### 3.8 CD Pipeline
+```
+push to main → Run Tests (332) → Apply D1 Migrations (--remote) → Deploy Worker
+```
 
 ---
 
-## 4. Struktur Folder
+## 4. Struktur Folder (Lengkap, dari source code)
 
 ```
 ojol-cuanbot/
 ├── src/
-│   ├── index.ts              # CF Worker entry, webhook route, health check
-│   ├── bot.ts                # grammY bot instance setup
+│   ├── index.ts              # CF Worker entry: POST /webhook, GET /health
+│   ├── bot.ts                # grammY bot: 7 commands + photo + text handlers
 │   ├── ai/
-│   │   ├── engine.ts         # Dual model pipeline: Qwen NLU → Llama FC → Validation
-│   │   │                     #   - isCasualChat() — narrow pattern detection
-│   │   │                     #   - normalizeWithQwen() — slang→formal (NO history)
-│   │   │                     #   - executeWithLlama() — function calling (WITH history)
-│   │   │                     #   - parseAIResponse() — OpenAI & legacy format
-│   │   │                     #   - deepParseArguments() — fix Llama string→array
-│   │   │                     #   - validateToolCalls() — maxItems, amount range, dedup
-│   │   │                     #   - stripThinkingTags() — remove <think> from Qwen
-│   │   ├── prompt.ts         # buildNLUPrompt() + buildExecutorPrompt()
-│   │   │                     #   - NLU: slang rules, edit/hapus keyword preservation
-│   │   │                     #   - Executor: tool mapping, clean target field rules
-│   │   └── tools.ts          # 15 AI tool/function definitions (maxItems:10 on transactions)
+│   │   ├── engine.ts         # Single model pipeline orchestrator
+│   │   │                     #   runAI() — main entry point
+│   │   │                     #   runPipeline() — casual vs financial routing
+│   │   │                     #   isDailyLimitExceeded() — 200 calls/day via KV
+│   │   │                     #   getNextMidnightWIBEpoch() — TTL calc for daily reset
+│   │   │                     #   withTimeout() — 15s AI pipeline timeout
+│   │   ├── executor.ts       # Llama 4 Scout interface
+│   │   │                     #   Model: @cf/meta/llama-4-scout-17b-16e-instruct
+│   │   │                     #   executeWithLlama() — FC mode (with tools)
+│   │   │                     #   chatWithLlama() — chat mode (no tools)
+│   │   │                     #   Fase F: dynamic tool subset from toolRouter
+│   │   ├── parser.ts         # AI response parsing
+│   │   │                     #   parseAIResponse() — OpenAI + legacy format
+│   │   │                     #   parseToolArguments() — string→object
+│   │   │                     #   deepParseArguments() — fix nested string→array
+│   │   │                     #   stripThinkingTags() — remove <think> tags
+│   │   ├── prompt.ts         # Prompt templates
+│   │   │                     #   buildUnifiedPrompt(date) — FC + slang table + security rules
+│   │   │                     #   buildCasualChatPrompt() — casual mode
+│   │   ├── toolRouter.ts     # Dynamic tool selection (Fase F)
+│   │   │                     #   selectToolsForMessage() — regex→tool group
+│   │   │                     #   5 routes: QUERY, EDIT, SETTING, DEBT, TRANSACTION
+│   │   ├── tools.ts          # 15 AI tool definitions + 5 tool groups
+│   │   │                     #   Groups: TRANSACTION, DEBT, QUERY, EDIT, SETTING
+│   │   ├── utils.ts          # getWIBDateString() — current date in WIB
+│   │   └── validator.ts      # AI output validation
+│   │                         #   isCasualChat() — narrow pattern detection
+│   │                         #   validateToolCalls() — maxItems, amount, dedup, delete limit
+│   │                         #   buildDedupKey() — name+args hash (Bug #11 fix)
 │   ├── config/
-│   │   └── env.ts            # Env type definitions
+│   │   └── env.ts            # Env interface: DB, AI, RATE_LIMIT, BOT_TOKEN, OCR_API_KEY
 │   ├── db/
-│   │   ├── repository.ts     # All DB queries: users, transactions, debts, conversation, edit/delete lookups
-│   │   └── repository-target.ts  # Target queries (obligations, goals, settings)
+│   │   ├── repository.ts     # Core queries: users, transactions, debts, conversation, edit/delete
+│   │   └── repository-target.ts  # Target queries: obligations, goals, settings
 │   ├── handlers/
-│   │   ├── start.ts          # /start command handler (onboarding)
-│   │   ├── reset.ts          # /reset command handler (clear all user data)
-│   │   └── message.ts        # Telegram message → AI → response pipeline
+│   │   ├── start.ts          # /start + /help — onboarding message
+│   │   ├── reset.ts          # /reset + /confirm_reset — wipe all user data
+│   │   ├── rekap.ts          # /rekap — shortcut rekap hari ini (zero AI)
+│   │   ├── target.ts         # /target — shortcut target harian (zero AI)
+│   │   ├── hutang.ts         # /hutang — shortcut daftar hutang (zero AI)
+│   │   ├── message.ts        # Text messages → AI single-model pipeline
+│   │   │                     #   KV dedup (5min TTL) + rate limit + input guard
+│   │   │                     #   Fast path: CONFIRM_WORDS + pending delete → skip AI
+│   │   │                     #   Conversation history: 3 recent messages
+│   │   │                     #   Tool context saved in assistant messages
+│   │   └── photo.ts          # Photo messages → OCR → parser → AI fallback
+│   │                         #   KV dedup + rate limit + cleanOCRForParser()
+│   ├── middleware/
+│   │   ├── inputGuard.ts     # sanitizeUserInput(), hasInjectionPatterns()
+│   │   └── rateLimit.ts      # isRateLimited() — KV-based per telegram user
+│   ├── parsers/
+│   │   ├── detector.ts       # detectFormat(): shopee | grab | gopay | unknown
+│   │   ├── index.ts          # tryParseOCR(): orchestrator, detectDateOffset()
+│   │   └── shopee.ts         # parseShopee(): 3-pass regex (food + SPX + fallback)
 │   ├── services/
-│   │   ├── router.ts         # Tool call dispatcher
-│   │   ├── transaction.ts    # Income/expense recording
-│   │   ├── debt.ts           # Hutang: record, pay, list, history, interest, overdue
-│   │   ├── edit.ts           # Edit/delete transactions (multi-layer search via repository)
-│   │   ├── edit-debt.ts      # Edit/delete debts (via repository)
-│   │   ├── summary.ts        # Rekap: today, yesterday, this_week, this_month
-│   │   ├── target.ts         # Smart daily target calculation
-│   │   └── user.ts           # Get or create user
+│   │   ├── router.ts         # processToolCalls(): tool call dispatcher (15 routes)
+│   │   ├── transaction.ts    # recordTransactions(): income/expense → D1
+│   │   ├── debt.ts           # recordDebt(), payDebt(), getDebts(), getDebtHistory()
+│   │   ├── edit.ts           # editTransaction(): 4-layer search
+│   │   ├── edit-debt.ts      # editDebt(): soft delete, amount adjustment
+│   │   ├── summary.ts        # getSummary(): today/yesterday/this_week/this_month/custom
+│   │   ├── target.ts         # getDailyTarget(): obligations + debts + avg ops + savings + goals
+│   │   ├── deleteConfirm.ts  # getPendingDelete(), setPendingDelete() — KV-based
+│   │   ├── ocr.ts            # extractTextFromImage(), downloadTelegramPhoto()
+│   │   └── user.ts           # getOrCreateUser(): find or create by telegram_id
 │   ├── types/
-│   │   ├── transaction.ts    # User, ParsedTransaction, ToolCallResult, etc.
+│   │   ├── transaction.ts    # User, ParsedTransaction, ToolCallResult interfaces
 │   │   └── ai-response.ts    # ToolCall, AIResult interfaces
 │   └── utils/
-│       ├── formatter.ts      # Telegram HTML response builder (14KB, handles all result types)
-│       ├── date.ts           # Date utils (WIB timezone, offset, range)
-│       └── validator.ts      # Amount validation, HTML string sanitization
+│       ├── formatter.ts      # formatReply(): Telegram HTML builder
+│       ├── date.ts           # getDateFromOffset(), getDateRange() — WIB timezone
+│       └── validator.ts      # validateAmount(), sanitizeString() — XSS prevention
 ├── migrations/
 │   ├── 0001_init.sql         # users, transactions, categories, debts, debt_payments, conversation_logs
 │   ├── 0002_smart_target.sql # obligations, goals, user_settings
-│   └── 0003_smart_debt.sql   # ALTER debts: +8 columns (due_date, interest, installment)
+│   └── 0003_smart_debt.sql   # ALTER debts: +8 columns
 ├── test/
-│   ├── index.spec.ts         # Worker entry point tests (3 tests)
-│   ├── env.d.ts              # Test environment type declarations
+│   ├── index.spec.ts         # Worker entry point (3 tests)
+│   ├── env.d.ts              # Test environment types
 │   ├── tsconfig.json         # Test-specific tsconfig
 │   ├── ai/
-│   │   └── engine.spec.ts    # AI engine tests (24 tests: parse, validate, casual, deepParse)
+│   │   └── engine.spec.ts    # AI engine (24 tests)
+│   ├── handlers/             # Handler-level tests
+│   ├── middleware/            # Rate limit, input guard tests
+│   ├── parsers/
+│   │   ├── detector.spec.ts  # Format detection (17 tests)
+│   │   ├── shopeefood.spec.ts # Shopee parser (20 tests)
+│   │   └── index.spec.ts     # Parser orchestrator (11 tests)
 │   ├── services/
-│   │   ├── transaction.spec.ts  # Transaction recording tests (15 tests)
-│   │   ├── edit.spec.ts         # Edit/delete transaction tests (13 tests)
-│   │   ├── edit-debt.spec.ts    # Edit/delete debt tests (8 tests)
-│   │   ├── summary.spec.ts      # Summary/rekap tests (7 tests)
-│   │   ├── user.spec.ts         # User service tests (5 tests)
-│   │   ├── debt.spec.ts         # Smart debt tests (~12 tests)
-│   │   ├── router.spec.ts       # Tool call dispatch tests (11 tests)
-│   │   └── target.spec.ts       # Smart target calculation tests
+│   │   ├── transaction.spec.ts (15 tests)
+│   │   ├── edit.spec.ts        (13 tests)
+│   │   ├── edit-debt.spec.ts   (8 tests)
+│   │   ├── summary.spec.ts     (7 tests)
+│   │   ├── user.spec.ts        (5 tests)
+│   │   ├── debt.spec.ts        (~12 tests)
+│   │   ├── router.spec.ts      (11 tests)
+│   │   └── target.spec.ts      (varies)
 │   └── utils/
-│       ├── validator.spec.ts    # validateAmount + sanitizeString (19 tests)
-│       ├── date.spec.ts         # getDateFromOffset + getDateRange (12 tests)
-│       └── formatter.spec.ts    # formatRupiah + formatReply (19 tests)
+│       ├── validator.spec.ts   (19 tests)
+│       ├── date.spec.ts        (12 tests)
+│       └── formatter.spec.ts   (19 tests)
 ├── .github/workflows/
-│   ├── ci.yml                # CI: test on push/PR to main
-│   └── deploy.yml            # CD: test → migrate D1 → deploy (on push to main)
-├── wrangler.jsonc
+│   ├── ci.yml                # CI: vitest on push/PR to main
+│   └── deploy.yml            # CD: test → migrate D1 → deploy worker
+├── wrangler.jsonc            # Worker config: cuanbot, D1, KV, AI bindings
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.mts
@@ -223,11 +386,10 @@ ojol-cuanbot/
 
 ---
 
-## 5. Database Schema (Lengkap)
+## 5. Database Schema (dari migrations/)
 
-### Migration 0001: Core
+### Migration 0001: Core Tables
 ```sql
--- users: Telegram user mapping
 CREATE TABLE users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   telegram_id TEXT NOT NULL UNIQUE,
@@ -237,16 +399,15 @@ CREATE TABLE users (
   updated_at INTEGER DEFAULT (unixepoch())
 );
 
--- categories: Pre-seeded income/expense categories
 CREATE TABLE categories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL CHECK(type IN ('income','expense')),
   name TEXT NOT NULL,
   icon TEXT
 );
--- Seeded: orderan, bonus, tip, lainnya (income), makan, bensin, servis, pulsa, rokok, parkir, lainnya (expense)
+-- Seeded income: orderan, bonus, tip, lainnya
+-- Seeded expense: makan, bensin, servis, pulsa, rokok, parkir, lainnya
 
--- transactions: All income & expense records
 CREATE TABLE transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -255,35 +416,33 @@ CREATE TABLE transactions (
   amount INTEGER NOT NULL,
   description TEXT,
   source_text TEXT,
-  trx_date TEXT NOT NULL,  -- format: YYYY-MM-DD
+  trx_date TEXT NOT NULL,  -- YYYY-MM-DD
   created_at INTEGER DEFAULT (unixepoch())
 );
 
--- debts: Hutang & piutang (enhanced with smart debt columns)
 CREATE TABLE debts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
   type TEXT NOT NULL CHECK(type IN ('hutang','piutang')),
   person_name TEXT NOT NULL,
-  amount INTEGER NOT NULL,          -- pokok
-  remaining INTEGER NOT NULL,       -- sisa (bisa < amount untuk hutang lama)
+  amount INTEGER NOT NULL,
+  remaining INTEGER NOT NULL,
   status TEXT DEFAULT 'active',
   note TEXT,
   source_text TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
   settled_at INTEGER,
-  -- Smart Debt columns (migration 0003)
-  due_date TEXT,                    -- YYYY-MM-DD, final due date
-  interest_rate REAL DEFAULT 0,     -- decimal (0.02 = 2%)
-  interest_type TEXT DEFAULT 'none', -- 'none', 'flat', 'daily'
-  tenor_months INTEGER,             -- jumlah bulan cicilan
-  installment_amount INTEGER,       -- nominal per cicilan
-  installment_freq TEXT DEFAULT 'monthly', -- 'daily', 'weekly', 'monthly'
-  next_payment_date TEXT,           -- YYYY-MM-DD, tanggal cicilan berikutnya
-  total_with_interest INTEGER       -- total bayar (pokok + bunga)
+  -- Added by migration 0003:
+  due_date TEXT,
+  interest_rate REAL DEFAULT 0,
+  interest_type TEXT DEFAULT 'none',  -- 'none', 'flat', 'daily'
+  tenor_months INTEGER,
+  installment_amount INTEGER,
+  installment_freq TEXT DEFAULT 'monthly',
+  next_payment_date TEXT,
+  total_with_interest INTEGER
 );
 
--- debt_payments: Riwayat pembayaran per hutang
 CREATE TABLE debt_payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   debt_id INTEGER NOT NULL REFERENCES debts(id),
@@ -292,7 +451,6 @@ CREATE TABLE debt_payments (
   paid_at INTEGER DEFAULT (unixepoch())
 );
 
--- conversation_logs: Chat history untuk AI context
 CREATE TABLE conversation_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -304,7 +462,6 @@ CREATE TABLE conversation_logs (
 
 ### Migration 0002: Smart Target
 ```sql
--- obligations: Kewajiban tetap (cicilan, kontrakan, iuran)
 CREATE TABLE obligations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -312,13 +469,11 @@ CREATE TABLE obligations (
   amount INTEGER NOT NULL,
   frequency TEXT NOT NULL DEFAULT 'daily' CHECK(frequency IN ('daily','weekly','monthly')),
   status TEXT DEFAULT 'active',
-  note TEXT,
-  source_text TEXT,
+  note TEXT, source_text TEXT,
   created_at INTEGER DEFAULT (unixepoch()),
   updated_at INTEGER DEFAULT (unixepoch())
 );
 
--- goals: Target nabung untuk beli sesuatu
 CREATE TABLE goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -332,7 +487,6 @@ CREATE TABLE goals (
   updated_at INTEGER DEFAULT (unixepoch())
 );
 
--- user_settings: Key-value settings (daily_saving, dll)
 CREATE TABLE user_settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -348,228 +502,216 @@ CREATE TABLE user_settings (
 
 ### ✅ DONE (Production)
 
-#### 6.1 Catat Transaksi (NLP + Dual Model)
+#### 6.1 Catat Transaksi (Single Model — Llama 4 Scout)
 - Input natural: "dapet 120rb, makan 25rb, bensin 30rb"
-- **Qwen NLU** normalize slang: goceng→Rp5.000, gocap→Rp50.000, ceban→Rp10.000, rb/jt/k
-- **Llama FC** parse → reliable tool calls
-- Kategori otomatis: orderan, makan, bensin, dll
-- Date offset: hari ini, kemarin, 2 hari lalu
-- Multi transaksi dalam 1 pesan (maxItems: 10)
+- **Slang conversion via system prompt**: goceng→5000, gocap→50000, ceban→10000, seceng→1000
+- Llama 4 Scout handles slang + function calling in single call
+- Kategori otomatis, date offset, multi transaksi (max 10)
 - Auto-progress bar setelah catat income
-- Validation: amount range Rp1 – Rp100.000.000, deduplicate tool calls
+- Validation: Rp1–Rp100.000.000, dedup by name+args hash
 - Service: `src/services/transaction.ts`
 
-#### 6.2 Hutang & Piutang (Smart Debt)
-- Catat hutang/piutang ke seseorang
-- **Jatuh tempo**: tanggal absolut, offset hari, tanggal berulang (recurring_day)
-- **Bunga**: flat (per bulan), daily (per hari)
-- **Cicilan & tenor**: auto-calculate cicilan, tracking payment number
-- **Hutang lama**: input hutang yang sudah berjalan (amount vs remaining berbeda)
-- **Overdue detection**: TELAT X HARI, urgent (≤3 hari), soon (≤7 hari)
-- **Bayar hutang**: auto-update remaining, next_payment_date, lunas detection
-- **Riwayat pembayaran**: list semua payment per hutang
-- **List hutang**: sorted by urgency (overdue → urgent → normal)
+#### 6.2 Screenshot Order — OCR + Local Parser
+- **Driver kirim screenshot** riwayat order Shopee → auto-parse semua transaksi
+- **OCR**: OCR.space Engine 2, ~1-3s, max 1MB photo
+- **Local parser (0ms)**: Regex-based, bypass AI completely
+  - Detects: ShopeeFood + SPX (package delivery)
+  - 3-pass: food regex → SPX regex → fallback time+Rp
+  - Amount parsing handles OCR artifacts: comma, dot, colon, apostrophe
+  - Date offset from screenshot header ("09 Feb 2026" → -1)
+- **AI fallback**: Unknown formats → same single-model pipeline as text
+- **Dedup**: KV-based, 5min TTL, prevents duplicate from Telegram retry
+- **Performance**: Known format 1.4s total (was 10.5s timeout), 0 AI calls
+- Handler: `src/handlers/photo.ts`
+- Parser: `src/parsers/shopee.ts`, `src/parsers/detector.ts`, `src/parsers/index.ts`
+- OCR: `src/services/ocr.ts`
+
+#### 6.3 Hutang & Piutang (Smart Debt)
+- Catat hutang/piutang, jatuh tempo, bunga (flat/daily), cicilan & tenor
+- Overdue detection, next payment tracking, bayar → auto-update remaining
+- Riwayat pembayaran, list sorted by urgency
 - Service: `src/services/debt.ts`
 
-#### 6.3 Smart Daily Target
+#### 6.4 Smart Daily Target
 - Komponen: obligations + debt installments + avg operational + savings + goals + buffer 10%
-- **Obligations**: kewajiban tetap (cicilan gopay, kontrakan, dll) — daily/weekly/monthly
-- **Debt integration**: hutang overdue = full amount, hutang cicilan = dibagi per hari
-- **Avg operational**: rata-rata pengeluaran 7 hari terakhir
-- **Savings**: tabungan harian minimum
-- **Goals**: target nabung dibagi sisa hari
-- **Progress bar**: otomatis muncul setiap catat income
+- Auto progress bar setiap catat income
 - Service: `src/services/target.ts`
 
-#### 6.4 Rekap Keuangan
+#### 6.5 Rekap Keuangan
 - Period: today, yesterday, this_week, this_month, custom
-- Total income, expense, net
-- Detail per transaksi
 - Service: `src/services/summary.ts`
 
-#### 6.5 Edit & Hapus
-- Edit transaksi: multi-layer search via repository (description, category, source_text, last)
-- Hapus transaksi
-- Edit hutang (adjust remaining proportionally) via repository
-- Hapus hutang (soft delete via `settleDebt()`) via repository
-- Service: `src/services/edit.ts`, `src/services/edit-debt.ts`
-- **All SQL in repository layer** (no direct db.prepare in services)
+#### 6.6 Edit & Hapus
+- Edit/hapus transaksi: 4-layer search (description → category → source_text → last)
+- Edit/hapus hutang (soft delete via settleDebt)
+- **Delete confirmation**: 2-step via KV (setPendingDelete → confirm/cancel)
+- **Max 1 delete per message** (Phase 3 security)
+- Service: `src/services/edit.ts`, `src/services/edit-debt.ts`, `src/services/deleteConfirm.ts`
 
-#### 6.6 Commands
-- `/start` — Onboarding flow, auto-create user. Handler: `src/handlers/start.ts`
-- `/reset` — Clear all user data (transactions, debts, conversation, obligations, goals, settings). Handler: `src/handlers/reset.ts`
+#### 6.7 Slash Commands (Zero AI — 0 neurons)
 
-#### 6.7 AI Engine — Dual Model Pipeline
-- **Stage 1: Qwen NLU** (`@cf/qwen/qwen3-30b-a3b-fp8`)
-  - Normalize Indonesian slang → formal text + explicit Rupiah
-  - NO conversation history (prevents re-translating old messages)
-  - NO tools — pure text generation
-  - `<think>` tag stripping (Qwen3 quirk)
-  - Keyword preservation for edit/delete commands
-- **Stage 2: Llama FC** (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`)
-  - Parse normalized text → reliable tool calls
-  - WITH conversation history (for edit context)
-  - WITH 15 tool definitions
-  - Retry with `tool_choice: "required"` if 0 tool calls
-- **Stage 3: Validation** (`validateToolCalls()`)
-  - `deepParseArguments()` — fix Llama returning string instead of array
-  - `maxItems: 10` — truncate runaway arrays
-  - Amount range: Rp1 – Rp100.000.000
-  - Deduplicate same tool called multiple times
-- **Casual chat fast path**: `isCasualChat()` → single Qwen call (≤4 words + greeting pattern)
-- Engine: `src/ai/engine.ts`
+| Command | Handler | Function |
+|---------|---------|----------|
+| `/start` | `handlers/start.ts` | Onboarding, auto-create user |
+| `/help` | `handlers/start.ts` | Same as /start |
+| `/reset` | `handlers/reset.ts` | Confirm prompt for full data wipe |
+| `/confirm_reset` | `handlers/reset.ts` | Execute wipe |
+| `/rekap` | `handlers/rekap.ts` | Shortcut rekap hari ini |
+| `/target` | `handlers/target.ts` | Shortcut target harian |
+| `/hutang` | `handlers/hutang.ts` | Shortcut daftar hutang aktif |
 
-#### 6.8 CI/CD (Zero Terminal Lokal)
-- **CI**: GitHub Actions — test on push/PR to main (`.github/workflows/ci.yml`)
-- **CD**: GitHub Actions — on push to main (`.github/workflows/deploy.yml`):
-  1. Run tests
-  2. Apply D1 migrations (`wrangler d1 migrations apply cuanbot-db --remote`)
-  3. Deploy Worker to Cloudflare
-- **Migration otomatis**: Idempotent, fail-fast, no-op jika tidak ada migration baru
-- **Tidak perlu terminal lokal** untuk workflow apapun
+Registered in: `src/bot.ts`
+
+#### 6.8 Security & Middleware (Phase 3)
+- **Rate limit**: KV-based per telegram user (`src/middleware/rateLimit.ts`)
+- **Input guard**: `sanitizeUserInput()`, `hasInjectionPatterns()` (`src/middleware/inputGuard.ts`)
+- **Message dedup**: KV-based idempotency for text + photo (5min TTL)
+- **Daily AI call limit**: 200 calls/user/day via KV, reset at midnight WIB
+- **Delete limiter**: Max 1 delete operation per request (`validator.ts`)
+- **Security prompt rules**: Off-topic rejection, role injection defense, delete restriction
+- **Delete confirmation fast path**: CONFIRM_WORDS bypass AI (Bug 4 fix, saves ~42 neurons)
+- **Amount validation**: Rp1–Rp100.000.000 (`src/utils/validator.ts`)
+- **HTML sanitize**: Prevent XSS in Telegram responses
+
+#### 6.9 AI Engine — Single Model Pipeline (src/ai/engine.ts)
+- **Model**: `@cf/meta/llama-4-scout-17b-16e-instruct` (satu model untuk semua)
+- **Casual chat**: `isCasualChat()` → `chatWithLlama()` — no tools, casual prompt
+- **Financial input**: `executeWithLlama()` — with tools + unified prompt (slang table built-in)
+- **Validation**: `validateToolCalls()` — maxItems, amount range, dedup by args hash, delete limit
+- **Retry**: If 0 tool calls → retry with enhanced mode (ALL 15 tools + explicit slang hint)
+- **Timeout**: 15 seconds pipeline timeout → friendly error message
+- **Daily limit**: 200 AI calls/user/day via KV, reset midnight WIB
+- **Dynamic tools**: `selectToolsForMessage()` selects 4-6 tools from 15 (Fase F)
+- Engine: `src/ai/engine.ts`, Executor: `src/ai/executor.ts`
+
+#### 6.10 CI/CD (Zero Terminal Lokal)
+- CI: GitHub Actions — vitest on push/PR
+- CD: test → D1 migration → deploy worker (on push to main)
+- Migration: idempotent, fail-fast
 
 ### 🔲 PLANNED (Roadmap)
 
-- [ ] Potongan platform otomatis (Grab 20%, Gojek 20%, ShopeeFood 20%)
-- [ ] Multi-user support (isolasi data per telegram user)
-- [ ] Notifikasi/reminder jatuh tempo hutang (scheduled worker)
-- [ ] Export data (PDF/CSV rekap bulanan)
-- [ ] Dashboard web dengan grafik (analytics)
-- [ ] `/help` command — panduan lengkap penggunaan
-- [ ] `/rekap` command — shortcut rekap hari ini
-- [ ] `/target` command — shortcut lihat target harian
+- [ ] Multi-foto batch (kirim 2-3 screenshot sekaligus)
+- [ ] Export laporan (PDF/CSV rekap bulanan)
+- [ ] Reminder cicilan (scheduled worker + push notification)
+- [ ] Analisis pengeluaran per kategori
+- [ ] GrabFood parser
+- [ ] Multi-user household
 
 ---
 
-## 7. AI Tools (Function Definitions)
-
-15 tools tersedia di `src/ai/tools.ts`:
+## 7. AI Tools (15 definitions in src/ai/tools.ts)
 
 | Tool Name | Fungsi | Key Args |
 |-----------|--------|----------|
-| `record_transactions` | Catat income/expense (max 10 items) | `transactions[]`: {type, amount, category, description, date_offset} |
-| `record_debt` | Catat hutang/piutang baru | `type, person_name, amount, remaining?, due_date?, due_date_days?, recurring_day?, interest_rate?, interest_type?, tenor_months?, installment_amount?, installment_freq?` |
+| `record_transactions` | Catat income/expense (max 10) | `transactions[]`: {type, amount, category, description, date_offset} |
+| `record_debt` | Catat hutang/piutang baru | `type, person_name, amount, due_date_days?, note?` |
 | `pay_debt` | Bayar hutang | `person_name, amount` |
-| `get_debts` | List hutang aktif | `type`: "hutang"/"piutang"/"all" |
-| `get_debt_history` | Riwayat pembayaran hutang | `person_name` |
-| `get_summary` | Rekap keuangan | `period`: "today"/"yesterday"/"this_week"/"this_month" |
-| `set_obligation` | Set kewajiban tetap | `name, amount, frequency` |
-| `edit_obligation` | Edit/hapus kewajiban | `name, action`: "delete"/"done" |
-| `set_goal` | Set goal nabung | `name, target_amount, deadline_days` |
-| `edit_goal` | Edit/batal goal | `name, action`: "cancel"/"done" |
-| `set_saving` | Set tabungan harian | `amount` |
-| `get_daily_target` | Hitung target harian | (no args) |
-| `edit_transaction` | Edit/hapus transaksi | `action, target, new_amount?` |
-| `edit_debt` | Edit hutang | `action, person_name, new_amount?` |
-| `ask_clarification` | Minta klarifikasi / trigger reset | `message` |
+| `get_debts` | List hutang aktif | `type`: hutang/piutang/all |
+| `get_debt_history` | Riwayat pembayaran | `person_name` |
+| `get_summary` | Rekap keuangan | `period`: today/yesterday/this_week/this_month |
+| `set_obligation` | Kewajiban rutin | `name, amount, frequency?` |
+| `edit_obligation` | Hapus/selesaikan kewajiban | `action`: delete/done, `name` |
+| `set_goal` | Goal menabung | `name, target_amount, deadline_days?` |
+| `edit_goal` | Batal/selesaikan goal | `action`: cancel/done, `name` |
+| `set_saving` | Tabungan harian | `amount` |
+| `get_daily_target` | Target harian | (no args) |
+| `edit_transaction` | Edit/hapus transaksi | `action`: edit/delete, `target, new_amount?` |
+| `edit_debt` | Edit/hapus hutang | `action`: edit/delete, `person_name, new_amount?` |
+| `ask_clarification` | Tanya balik jika ambigu | `message` |
+
+### Tool Groups (Fase F — dynamic selection via toolRouter.ts)
+- `TRANSACTION_TOOLS` (4): record_transactions, record_debt, pay_debt, ask_clarification
+- `DEBT_TOOLS` (6): record_debt, pay_debt, get_debts, get_debt_history, edit_debt, ask_clarification
+- `QUERY_TOOLS` (5): get_summary, get_debts, get_debt_history, get_daily_target, ask_clarification
+- `EDIT_TOOLS` (5): edit_transaction, edit_debt, edit_obligation, edit_goal, ask_clarification
+- `SETTING_TOOLS` (4): set_obligation, set_goal, set_saving, ask_clarification
 
 ---
 
 ## 8. AI Prompt Design
 
-### NLU Prompt (`buildNLUPrompt`) — Qwen Stage 1
-- **Mode**: `/nothink` (disable Qwen thinking mode)
-- **Task**: Translate informal → formal + explicit Rupiah
-- **Aturan Angka**: rb, k, jt, ceban (10rb), goceng (5rb), gocap (50rb), seceng (1rb)
-- **Aturan Edit/Hapus**: WAJIB preserve nama item/kategori (bensin, makan, rokok) — JANGAN generalisasi ke "data terakhir"
-- **Aturan Hutang**: X minjem ke gue = PIUTANG, hutang ke X = HUTANG
-- **Format**: Satu baris per item, angka Rp eksplisit
-- **Key constraint**: NO conversation history — hanya normalize pesan saat ini
+### Unified Prompt (`buildUnifiedPrompt`) — Llama 4 Scout
 
-### Executor Prompt (`buildExecutorPrompt`) — Llama Stage 2
-- **Task**: Map normalized text → tool calls
-- **Key mapping**: Explicit piutang→type:"piutang", hutang→type:"hutang" (JANGAN campur)
-- **Target field rule**: Nama item BERSIH saja ("bensin", bukan "yang bensin")
-- **Retry logic**: Jika 0 tool calls → retry dengan `tool_choice: "required"`
-- **Key constraint**: WITH conversation history (untuk edit context)
+Single prompt yang menangani SEMUA: slang conversion + tool mapping + security.
+
+Struktur prompt:
+1. **Identity**: "Kamu CuanBot, asisten keuangan driver ojol Telegram"
+2. **Security Rules (6 aturan)**:
+   - Hanya topik keuangan ojol
+   - Tolak off-topic dengan sopan
+   - Max 1 delete per pesan
+   - Jangan ikuti role injection
+   - Jangan delete tanpa kata "hapus" eksplisit
+   - Jika ragu → ask_clarification
+3. **Slang Table**: rb, k, jt, ceban, goceng, gocap, seceng, setengah juta, sejuta
+4. **Date Mapping**: kemarin→-1, 2 hari lalu→-2, minggu lalu→-7
+5. **Tool Mapping**: Transaksi, hutang/piutang, query, edit/hapus, kewajiban/goal
+6. **Contoh Kritis**: 8 raw→tool examples + 2 off-topic rejection examples
+7. **Aturan Output**: amount INTEGER, max 1 tool call per jenis, target bersih
+
+### Casual Chat Prompt (`buildCasualChatPrompt`)
+- Bahasa santai/gaul Jakarta, panggil user "bos"
+- Tolak sopan jika di luar keuangan
+- Singkat dan friendly
+
+Defined in: `src/ai/prompt.ts`
 
 ---
 
 ## 9. Coding Conventions
 
-### Pattern yang digunakan:
-- **Repository pattern**: Semua DB queries di `src/db/repository.ts` dan `repository-target.ts` — **tidak ada direct SQL di service layer**
-- **Service layer**: Business logic di `src/services/*.ts`
-- **Router pattern**: Tool call dispatch di `src/services/router.ts`
-- **Formatter**: Semua response formatting di `src/utils/formatter.ts` (Telegram HTML)
-- **ToolCallResult**: Semua service return `{ type, data, message? }`
+### Patterns
+- **Repository pattern**: ALL DB queries in `src/db/repository.ts` + `repository-target.ts`
+- **Service layer**: Business logic in `src/services/*.ts`
+- **Router pattern**: Tool dispatch in `src/services/router.ts`
+- **Formatter**: ALL response formatting in `src/utils/formatter.ts` (Telegram HTML)
+- **ToolCallResult**: All services return `{ type, data, message? }`
 
-### Repository exports (edit/delete related):
-- `FoundTransaction` — exported interface for transaction lookup results
-- `findTransactionByDescription()` — Layer 1: LIKE match on description
-- `findTransactionByCategory()` — Layer 2: exact match on category name
-- `findTransactionBySourceText()` — Layer 3: LIKE match on source_text
-- `findLastTransaction()` — Layer 4: fallback to most recent transaction
-- `settleDebt()` — soft delete debt (set status = settled)
-- `updateDebtAmountAndRemaining()` — update debt amount + remaining
+### AI Module Structure (`src/ai/`)
+- `engine.ts` — orchestrator, entry point (`runAI`)
+- `executor.ts` — Llama 4 Scout interface (`executeWithLlama`, `chatWithLlama`)
+- `parser.ts` — response parsing (`parseAIResponse`, `deepParseArguments`)
+- `prompt.ts` — prompt templates (`buildUnifiedPrompt`, `buildCasualChatPrompt`)
+- `toolRouter.ts` — dynamic tool selection (`selectToolsForMessage`)
+- `tools.ts` — 15 tool definitions + 5 groups
+- `utils.ts` — `getWIBDateString()`
+- `validator.ts` — validation + casual detection (`isCasualChat`, `validateToolCalls`)
 
-### Konvensi:
-- Amount selalu dalam INTEGER (Rupiah penuh, bukan desimal)
-- Tanggal format: `YYYY-MM-DD` (string)
+### Data conventions
+- Amount: INTEGER (Rupiah penuh, bukan desimal)
+- Tanggal: `YYYY-MM-DD` (string)
 - Timestamp: `unixepoch()` (integer)
 - Interest rate: decimal (0.02 = 2%)
-- Bahasa response: Indonesia informal, panggil user "bos" atau "bro"
+- Response language: Indonesia informal, panggil user "bos"/"bro"
 - Telegram format: HTML (`<b>`, `<i>`, emoji unicode)
 
-### Branching:
+### Branching & merge
 - `main` — production, auto-deploy
 - `feat/*` — fitur baru
-- `hotfix/*` — perbaikan cepat
-- `refactor/*` — refactoring tanpa ubah behavior
-- Merge method: squash merge
+- `fix/*` / `hotfix/*` — perbaikan
+- `refactor/*` — refactoring
+- `docs/*` — dokumentasi
+- Merge method: **squash merge**
 
 ---
 
 ## 10. Keputusan Desain Penting
 
-### Kenapa Dual Model (bukan single model)?
-- **Qwen** paham Indonesian slang tapi lemah function calling
-- **Llama** kuat function calling tapi tidak paham slang (goceng→Rp500, bukan Rp5.000)
-- Dual pipeline: Qwen normalize → Llama execute = best of both worlds
-- Trade-off: +2-3s latency, acceptable untuk Telegram chatbot
-- Kedua model gratis di Cloudflare Workers AI
-
-### Kenapa NLU tanpa conversation history?
-- Jika Qwen dapat history, ia re-translate pesan lama → "bonus gocap" jadi include "rokok goceng" dari pesan sebelumnya
-- Fix: NLU hanya terima system prompt + pesan saat ini
-- Llama tetap dapat history untuk context (edit "yang terakhir")
-
-### Kenapa deepParseArguments?
-- Llama 3.3 70B kadang return `{transactions: "[{...}]" }` (string) bukan array
-- `deepParseArguments()` auto-detect dan parse nested string → array/object
-- Safety net di `validateToolCalls()` untuk parse ulang jika masih string
-
-### Kenapa Workers AI (bukan OpenAI langsung)?
-- Gratis (included di CF Workers)
-- Latency rendah (same edge network)
-- Tidak perlu manage API key eksternal untuk AI
-
-### Kenapa D1 (bukan Postgres/Supabase)?
-- Zero-config, gratis
-- SQLite = simple, cukup untuk single-bot use case
-- Integrated dengan Workers ecosystem
-
-### Kenapa grammY (bukan node-telegram-bot-api)?
-- TypeScript-first
-- Native support untuk Cloudflare Workers (webhook mode)
-- Middleware architecture yang clean
-
-### Kenapa amount INTEGER (bukan REAL)?
-- Menghindari floating point errors
-- Rupiah tidak punya desimal yang berarti
-- Kalkulasi lebih presisi
-
-### Kenapa conversation_logs?
-- AI butuh context dari chat sebelumnya (untuk edit, koreksi)
-- Disimpan di D1, di-load per user saat request
-- Dibatasi 6 pesan terakhir untuk hemat token
-- Dikirim ke **Llama saja** (bukan Qwen NLU)
-
-### Kenapa auto-migration di CD?
-- Zero terminal lokal — developer tidak perlu buka terminal sama sekali
-- Idempotent — D1 track applied migrations, aman dijalankan berulang
-- Fail-fast — migration gagal = deploy diskip
-- Urutan benar — schema update dulu, baru code deploy
+| Keputusan | Alasan |
+|-----------|--------|
+| **Single Model Llama 4 Scout** (bukan dual model lagi) | Llama 4 Scout cukup kuat handle slang + FC dalam 1 call. Latency lebih rendah, complexity berkurang |
+| Slang table di system prompt | Tidak perlu model NLU terpisah — slang table cukup efektif di Llama 4 Scout |
+| Dynamic tool selection (Fase F) | Kirim 4-6 tools bukan 15 → hemat tokens, lebih fokus |
+| Delete confirmation 2-step (KV) | Prevent accidental delete. Fast path skip AI untuk konfirmasi |
+| Daily AI limit 200/user | Prevent abuse + budget control. Reset midnight WIB via absolute KV expiration |
+| Security prompt rules (Phase 3) | Off-topic rejection, role injection defense, single delete limit |
+| Dedup by name + args hash (Bug #11) | Allow multiple record_debt with different args |
+| Workers AI (bukan OpenAI) | Gratis, low latency, no external API key |
+| D1 (bukan Postgres) | Zero-config, gratis, cukup untuk single-bot |
+| Local parser sebelum AI | Shopee = 0ms parse, 0 AI calls → hemat neurons |
+| KV dedup (5min TTL) | Telegram retries webhook → prevent double recording |
+| deepParseArguments() | Llama kadang return string bukan array → auto-fix |
 
 ---
 
@@ -577,153 +719,96 @@ CREATE TABLE user_settings (
 
 | Issue | Detail | Workaround |
 |-------|--------|------------|
-| Qwen3 `<think>` tags | Model kadang wrap response dalam `<think>...</think>` | `stripThinkingTags()` in engine.ts |
-| Llama string transactions | Llama returns `transactions` as JSON string, not array | `deepParseArguments()` + safety parse in `validateToolCalls()` |
-| Llama retry needed | `target hari ini` kadang 0 tool calls pada attempt pertama | Auto-retry with `tool_choice: "required"` |
-| Empty reply | Jika AI return tool calls tanpa text, formatter bisa return empty string | `formatter.ts` has "Diproses!" fallback |
-| BOT_INFO must be valid JSON | `wrangler.jsonc` vars `BOT_INFO` harus valid JSON string | Set via `npx wrangler secret put` atau update vars |
-| router.spec.ts stderr | `[Target] Failed to calculate progress: db.prepare is not a function` | Expected — mockDB = {}, target calc is try/catch |
-| CF Neurons billing | Cloudflare free tier = 10.000 Neurons/day, ~50-100 dual-model requests | Monitor usage, consider single-model for simple cases |
+| `<think>` tags | Model kadang wrap response | `stripThinkingTags()` in parser.ts |
+| String transactions | AI returns JSON string bukan array | `deepParseArguments()` in parser.ts |
+| Retry needed | Kadang 0 tool calls pada first attempt | Auto-retry with enhanced mode + ALL tools |
+| Empty reply | AI return tool calls tanpa text | "Diproses!" fallback in formatter |
+| Pipeline timeout | Workers AI hang | 15s timeout → friendly error |
+| OCR 1MB limit | OCR.space free tier | Error message + suggest compress |
+| Daily limit edge | Counter reset at midnight WIB | `getNextMidnightWIBEpoch()` absolute expiration |
 
 ---
 
-## 12. Test Coverage
+## 12. Test Coverage (332 tests, all pass)
 
-| Test File | Tests | What it covers |
-|-----------|-------|----------------|
-| `test/index.spec.ts` | 3 | Worker entry point (GET health, POST webhook, other methods) |
-| `test/utils/validator.spec.ts` | 19 | `validateAmount` (boundaries, edge cases), `sanitizeString` (XSS, truncation) |
-| `test/utils/date.spec.ts` | 12 | `getDateFromOffset`, `getDateRange` (today, yesterday, this_week, this_month) |
-| `test/utils/formatter.spec.ts` | 19 | `formatRupiah`, `formatReply` (all ToolCallResult types) |
-| `test/services/router.spec.ts` | 11 | All tool routes, multi tool calls, unknown tool, empty calls |
-| `test/services/transaction.spec.ts` | 15 | Recording, validation, skip invalid, date offset, category lookup, sanitization |
-| `test/services/debt.spec.ts` | ~12 | Interest calc, overdue detection, next payment, debt history |
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test/index.spec.ts` | 3 | Worker entry point |
+| `test/ai/engine.spec.ts` | 24 | AI engine: parse, validate, casual, deepParse |
+| `test/parsers/detector.spec.ts` | 17 | ShopeeFood, SPX, Grab, GoPay, unknown |
+| `test/parsers/shopeefood.spec.ts` | 20 | Shopee parser: food, SPX, mixed, real-world |
+| `test/parsers/index.spec.ts` | 11 | tryParseOCR, detectDateOffset |
+| `test/services/router.spec.ts` | 11 | All 15 tool routes |
+| `test/services/transaction.spec.ts` | 15 | Recording, validation, category |
+| `test/services/debt.spec.ts` | ~12 | Interest, overdue, payment |
+| `test/services/edit.spec.ts` | 13 | Delete, edit, 4-layer search |
+| `test/services/edit-debt.spec.ts` | 8 | Soft delete, amount adjustment |
+| `test/services/summary.spec.ts` | 7 | Totals, period labels |
+| `test/services/user.spec.ts` | 5 | Get existing, create new |
 | `test/services/target.spec.ts` | varies | Smart target calculation |
-| `test/services/edit.spec.ts` | 13 | Delete, edit, not found, unknown action, resolveTarget layers 1-4 |
-| `test/services/edit-debt.spec.ts` | 8 | Soft delete via settleDebt, edit amount, remaining adjustment, clamp to 0 |
-| `test/services/summary.spec.ts` | 7 | Totals calculation, period labels, custom range, empty period |
-| `test/services/user.spec.ts` | 5 | Get existing, create new, throw on failure, argument passing |
-| `test/ai/engine.spec.ts` | 24 | OpenAI format, legacy, text extraction, think strip, malformed JSON, multi tool, validateToolCalls (runaway, invalid amount, dedup, string parse), isCasualChat |
-| **Total** | **~148+** | **All pass** |
+| `test/utils/validator.spec.ts` | 19 | validateAmount, sanitizeString |
+| `test/utils/date.spec.ts` | 12 | getDateFromOffset, getDateRange |
+| `test/utils/formatter.spec.ts` | 19 | formatRupiah, formatReply |
+| + handlers, middleware tests | varies | Various handler/middleware coverage |
+| **Total** | **332** | **All pass** |
 
 ---
 
-## 13. Live Test Results (2026-02-08)
+## 13. Changelog
 
-### Test Run: Post Dual-Model Hotfix
-
-**Overall: 21/23 PASS (91%)**
-
-| Fase | Test | Status |
-|------|------|--------|
-| 1 | `rokok goceng` → Rp5.000 | ✅ |
-| 1 | `bonus gocap` → Rp50.000 | ✅ |
-| 1 | `dapet ceban dari tip` → Rp10.000 | ✅ |
-| 1 | `dapet 120rb, makan 25rb, bensin 30rb` → 3 transaksi | ✅ |
-| 1 | `2 hari lalu bensin 40rb` → date_offset: -2 | ✅ |
-| 2 | `Andi minjem ke gue 200rb` → Piutang Rp200.000 | ✅ |
-| 2 | `yang terakhir salah, harusnya 250rb` → Edit Rp250.000 | ✅ |
-| 3 | `hutang ke Siti 1jt, jatuh tempo 30 hari lagi` → 30 day due | ✅ |
-| 4 | `Andi bayar 100rb` → Sisa Rp150.000 | ✅ |
-| 4 | `Andi bayar lagi 150rb` → 🎉 Lunas! | ✅ |
-| 5 | `riwayat pembayaran hutang Andi` → 2 payments | ✅ |
-| 5 | `riwayat hutang Siti` → Belum ada pembayaran | ✅ |
-| 6 | `tambah kewajiban cicilan gopay 500rb per bulan` → ✅ | ✅ |
-| 6 | `tambah goal nabung beli motor 5jt` → ✅ | ✅ |
-| 6 | `kewajiban gopay udah dibayar` → Done | ✅ |
-| 6 | `hapus goal motor` → Dibatalkan | ✅ |
-| 7 | `yang rokok tadi hapus aja` → Dihapus | ✅ |
-| 7 | `yang bensin 30rb ubah jadi 35rb` → Not found | ❌ (prompt fix pushed) |
-| 7 | `hapus transaksi yang gak ada` → Error handled | ✅ |
-| 8 | `daftar piutang` → type mapping salah | ⚠️ (prompt fix pushed) |
-| 8 | `target hari ini` → 171% tercapai (retry needed) | ✅ |
-| 8 | `rekap` → Bersih Rp95.000 | ✅ |
-| 9 | `makan siang 25rb` (duplicate test) → Tercatat | ✅ |
-
-**Prompt fix sudah dipush** untuk 2 failing cases (keyword preservation + piutang mapping).
+| Tanggal | Event | PR |
+|---------|-------|----|
+| 2026-02-06 | Initial setup: CF Worker + grammY + D1 | — |
+| 2026-02-06 | Hutang/piutang v1, edit/delete, summary | — |
+| 2026-02-07 | Smart target, smart debt, test suite v1 | #2–#10 |
+| 2026-02-08 | Cleanup, hardening, auto-migration CD | #12–#18 |
+| 2026-02-08 | Dual model pipeline (Qwen + Llama 3.3 70B) | #23 |
+| 2026-02-08 | Live test 91% pass | — |
+| 2026-02-09 | OCR photo pipeline + ShopeeFood parser | #34–#38 |
+| 2026-02-09 | Photo dedup, rate limit, error handling | #39–#41 |
+| 2026-02-10 | Unified Shopee parser (food + SPX) | #43 |
+| 2026-02-10 | **Migrated to single model: Llama 4 Scout 17B** | — |
+| 2026-02-10 | Dynamic tool routing (Fase F) | — |
+| 2026-02-10 | Security hardening Phase 3: input guard, daily limit, delete limiter | — |
+| 2026-02-10 | Bug fixes: #4 (delete confirm fast path), #6 (daily TTL), #11 (dedup hash) | — |
+| 2026-02-10 | Documentation update (AI_CONTEXT.md v3 — accurate single model) | #44 |
 
 ---
 
-## 14. Changelog (Keputusan & Milestone)
+## 14. Instruksi untuk AI (Workflow)
 
-| Tanggal | Event | Detail |
-|---------|-------|--------|
-| 2026-02-06 | Initial setup | CF Worker + grammY + D1, basic transaction recording |
-| 2026-02-06 | Hutang/piutang v1 | Basic debt recording, payment, listing |
-| 2026-02-06 | Edit/delete | Edit & delete transactions and debts |
-| 2026-02-06 | Summary/rekap | Today, yesterday, this_week, this_month |
-| 2026-02-07 | Smart target v1 | Obligations, goals, savings, progress bar |
-| 2026-02-07 | Auto-progress | Progress bar otomatis setiap catat income |
-| 2026-02-07 | Smart debt v1 | Due date, interest, installments, overdue, history |
-| 2026-02-07 | Hotfix display | Fix sisa/total display, recurring_day logic, target tool enforcement |
-| 2026-02-07 | Test suite v1 | 5 test files, 64 tests all pass (PR #2) |
-| 2026-02-07 | Validator bugfix | Fix double-escaping in sanitizeString |
-| 2026-02-07 | AI response fix | Fix empty reply, robust parsing, `<think>` tag strip (PR #3, #4) |
-| 2026-02-07 | Smart debt deploy | Migration 0003, full smart debt features (PR #10) |
-| 2026-02-08 | Tahap 1 cleanup | Remove stubs, add transaction test, rewrite AI_CONTEXT.md (PR #12) |
-| 2026-02-08 | Tahap 2 hardening | Add 5 test files (edit, edit-debt, summary, user, engine) — ~40 new tests (PR #13) |
-| 2026-02-08 | Refactor repository | Extract direct SQL from edit.ts & edit-debt.ts to repository layer (PR #14) |
-| 2026-02-08 | Auto-migration CD | Add D1 migration step in deploy.yml — zero terminal lokal (PR #15) |
-| 2026-02-08 | /reset command | Full data wipe: transactions, debts, payments, obligations, goals, settings, history (PR #16–#18) |
-| 2026-02-08 | Formatter fixes | PR #19: fix formatReply returning object, fix /reset handler |
-| 2026-02-08 | Llama switch | PR #20: switch FC model to Llama 3.3 70B — better function calling |
-| 2026-02-08 | Bot username fix | PR #21: update bot_info.json → correct @ojol_finance_bot username |
-| 2026-02-08 | Switch to Qwen FC | PR #22: rollback to Qwen for FC (Llama slang issue) |
-| 2026-02-08 | **Dual model pipeline** | **PR #23**: Hybrid architecture — Qwen NLU + Llama FC. Best of both worlds. |
-| 2026-02-08 | Hotfix crashes | Direct commit: fix `deepParseArguments` (string→array), remove NLU history |
-| 2026-02-08 | Prompt tuning | Direct commit: NLU keyword preservation, Executor piutang mapping fix |
-| 2026-02-08 | **Live test 91% pass** | 21/23 scenarios pass. Slang parsing 100%, FC reliable, validation works. |
-
----
-
-## 15. Instruksi untuk AI (Workflow)
-
-### Ketika diminta MENAMBAH FITUR BARU:
-1. Baca section 6 (fitur) untuk cek apakah sudah ada
-2. Buat branch `feat/<nama-fitur>` dari `main`
-3. Jika butuh schema baru → buat migration file `migrations/0004_*.sql` dst (akan auto-apply saat CD)
-4. Implementasi: repository → service → tools → prompt → formatter → router
-5. Tambah test jika logic complex
-6. Push, buat PR, tunggu CI pass
-7. Setelah user bilang merge, squash merge ke main
-8. **UPDATE file AI_CONTEXT.md ini** (section 4, 6, 12, 13)
-
-### Ketika diminta MEMPERBAIKI BUG:
-1. Buat branch `hotfix/<deskripsi>` atau direct commit ke main (untuk urgent hotfix)
-2. Fix di file yang relevan
-3. Push, buat PR (atau direct commit), tunggu CI pass
-4. Update AI_CONTEXT.md jika ada perubahan signifikan
-
-### Ketika diminta REFACTOR:
-1. Buat branch `refactor/<scope>`
-2. Jangan ubah behavior, hanya struktur
-3. Pastikan test masih pass
-4. Update AI_CONTEXT.md jika ada perubahan signifikan
-
-### Urutan file yang perlu diubah saat tambah fitur:
+### Menambah Fitur Baru:
+1. Baca section 6 untuk cek existing features
+2. Branch: `feat/<nama-fitur>` dari `main`
+3. Schema baru → `migrations/0004_*.sql` (auto-apply via CD)
+4. Urutan implementasi:
 ```
-1. migrations/0004_xxx.sql        (jika butuh table/column baru — auto-apply via CD)
-2. src/db/repository.ts           (query baru)
-3. src/services/<feature>.ts      (business logic)
-4. src/ai/tools.ts                (tool definition baru)
-5. src/ai/prompt.ts               (NLU + Executor instruksi)
-6. src/services/router.ts         (dispatch tool call baru)
-7. src/utils/formatter.ts         (format response)
-8. src/types/transaction.ts       (type baru jika perlu)
-9. test/services/<feature>.spec.ts (unit test)
-10. AI_CONTEXT.md                 (update dokumentasi)
+migrations/ → repository.ts → service.ts → tools.ts → prompt.ts → toolRouter.ts → router.ts → formatter.ts → types/ → tests → AI_CONTEXT.md
 ```
+5. Push → PR → CI pass → merge (squash)
 
-### Dual Model Considerations:
-Saat menambah fitur baru yang melibatkan AI:
-- **NLU prompt**: Tambah aturan normalize untuk input baru + contoh
-- **Executor prompt**: Tambah mapping tool untuk input yang sudah di-normalize
-- **Tools schema**: Tambah tool definition — ingat ini 37.5% dari total token, keep minimal
-- **Test**: Tambah test di `engine.spec.ts` untuk validateToolCalls jika ada logic baru
+### Memperbaiki Bug:
+1. Branch: `fix/<deskripsi>` atau `hotfix/<deskripsi>`
+2. Fix → push → PR → merge
+3. Update AI_CONTEXT.md jika signifikan
+
+### Menambah Parser Baru:
+1. Tambah regex di `src/parsers/detector.ts` → return format baru
+2. Buat `src/parsers/<platform>.ts` dengan fungsi `parse<Platform>()`
+3. Update switch di `src/parsers/index.ts`
+4. Update metadata label di `src/handlers/photo.ts`
+5. Tambah tests di `test/parsers/`
+
+### AI Model Considerations:
+- Model saat ini: `@cf/meta/llama-4-scout-17b-16e-instruct`
+- Prompt: `buildUnifiedPrompt()` — slang table + security + tool mapping
+- Tool routing: `selectToolsForMessage()` — tambah pattern jika tool group baru
+- Validation: `validateToolCalls()` — tambah rules jika perlu
+- Tests: engine.spec.ts untuk validateToolCalls
 
 ---
 
-## 16. Cara Pakai File Ini di Page Baru
+## 15. Cara Pakai File Ini di Page Baru
 
 Ketika memulai percakapan baru, user cukup bilang:
 
@@ -733,4 +818,4 @@ AI akan membaca file ini dan langsung punya konteks lengkap tanpa perlu mengulan
 
 ---
 
-*Last updated: 2026-02-08 — Hybrid dual-model pipeline (Qwen NLU + Llama FC), 91% live test pass*
+*Last updated: 2026-02-10 — Single model Llama 4 Scout 17B, Unified Shopee parser (food + SPX), OCR pipeline, Security Phase 3, 332 tests*

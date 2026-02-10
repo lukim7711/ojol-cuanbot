@@ -1,262 +1,222 @@
-# 🏍️ CuanBot — Asisten Keuangan Driver Ojol
+# 🏍️ CuanBot — Ojol Finance Assistant
 
-> Bot Telegram AI untuk manajemen keuangan harian driver ojek online Indonesia. Cukup chat natural, otomatis tercatat.
+Bot Telegram AI untuk manajemen keuangan harian driver ojek online Indonesia.
 
-[![Deploy to Cloudflare Workers](https://github.com/lukim7711/ojol-cuanbot/actions/workflows/deploy.yml/badge.svg)](https://github.com/lukim7711/ojol-cuanbot/actions/workflows/deploy.yml)
+> Catat pemasukan, pengeluaran, hutang — cukup chat biasa atau kirim screenshot order.
 
-## ✨ Fitur
+**Bot**: [@ojol_finance_bot](https://t.me/ojol_finance_bot)
 
-### 📝 Catat Transaksi (NLP)
-Chat biasa langsung tercatat — paham singkatan, slang, dan bahasa informal.
+---
 
+## ✨ Fitur Utama
+
+### 💬 Chat Natural Language
+Ketik seperti biasa, bot paham:
 ```
-"dapet 120rb orderan grab"          → 💰 Pemasukan: Rp120.000
-"makan 25rb, bensin 30rb"           → 💸 Pengeluaran: Rp25.000 + Rp30.000
-"kemarin dapet 200rb dari gojek"    → 💰 Pemasukan (kemarin): Rp200.000
-```
-
-### 💳 Hutang & Piutang
-Catat hutang/piutang dengan jatuh tempo, bunga, dan cicilan.
-
-```
-"minjem ke Budi 500rb jatuh tempo tanggal 20"
-"gue punya hutang ke Kredivo 1.5jt bunga 2% per bulan 6 bulan"
-"hutang motor ke FIF 8jt, sisa 5jt, cicilan 500rb per bulan tanggal 5"
-"bayar Kredivo 280rb"
-"riwayat bayar hutang Kredivo"
-"cek hutang"
+"dapet 120rb, makan 25rb, bensin 30rb"
+"bonus gocap"              → Rp50.000
+"rokok goceng"             → Rp5.000
+"2 hari lalu bensin 40rb"  → catat di tanggal 2 hari lalu
 ```
 
-Fitur hutang:
-- **Jatuh tempo fleksibel** — tanggal absolut, offset hari, atau tanggal berulang
-- **Support hutang lama** — input hutang yang sudah berjalan sebelum pakai bot
-- **Bunga otomatis** — flat (per bulan) dan daily (per hari)
-- **Tracking cicilan** — cicilan ke-berapa, sisa berapa, next payment kapan
-- **Deteksi overdue** — ⚠️ TELAT, ⏳ segera, 📅 aman
-- **Riwayat pembayaran** — lihat semua pembayaran per hutang
-
-### 🎯 Smart Daily Target
-Target harian otomatis dihitung dari semua kewajiban finansial.
-
+### 📷 Screenshot Order → Auto-Parse
+Kirim screenshot riwayat order Shopee — bot otomatis baca semua transaksi:
 ```
-"cicilan gopay 50rb per hari"       → Kewajiban tercatat
-"kontrakan 500rb per bulan"         → Kewajiban tercatat
-"nabung minimal 20rb per hari"      → Tabungan diset
-"mau beli helm 300rb target 30 hari"→ Goal tercatat
-"target gue berapa?"                → 🎯 Target Hari Ini: Rp176.734
-```
+✅ Tercatat!
+💰 Pemasukan: Rp18.400 — ShopeeFood 22:30
+💰 Pemasukan: Rp12.000 — ShopeeFood 21:43
+💰 Pemasukan: Rp27.200 — SPX 18:25
+💰 Pemasukan: Rp30.400 — SPX 17:06
+💰 Pemasukan: Rp32.800 — SPX 16:00
 
-Komponen target:
-- ✅ Kewajiban tetap (cicilan, kontrakan, iuran)
-- ✅ Cicilan hutang aktif (auto-prioritas overdue)
-- ✅ Estimasi operasional (rata-rata 7 hari terakhir)
-- ✅ Tabungan harian
-- ✅ Goals (nabung beli sesuatu)
-- ✅ Buffer 10%
-
-### 📊 Auto-Progress Bar
-Setiap catat pemasukan, progress target otomatis muncul:
-
+📋 Auto-parsed dari Shopee (6 food, 3 paket)
 ```
-"dapet 80rb"
-→ ✅ Tercatat! 💰 Pemasukan: Rp80.000 — orderan harian
-  ━━━━━━━━━━━━━━
-  🎉 TARGET TERCAPAI! ██████████ 113%
-  💵 Surplus: Rp23.266
-  Mantap bos, istirahat yang cukup ya! 😎
-```
+- ShopeeFood + SPX (paket marketplace) dikenali otomatis
+- 0 panggilan AI — pure regex, 0ms parse time
+- Format lain → AI fallback
 
-### 📈 Rekap Keuangan
+### 💸 Hutang & Piutang
 ```
-"rekap hari ini"     → Ringkasan pemasukan & pengeluaran hari ini
-"rekap kemarin"      → Ringkasan kemarin
-"rekap minggu ini"   → Ringkasan minggu ini
-"rekap bulan ini"    → Ringkasan bulan ini
+"hutang ke Siti 1jt, jatuh tempo 30 hari lagi"
+"Andi bayar 100rb"
+"riwayat hutang Andi"
+```
+- Jatuh tempo, bunga, cicilan
+- Overdue detection + urgency sorting
+- Riwayat pembayaran per orang
+
+### 🎯 Smart Target Harian
+Bot hitung berapa yang harus dicapai hari ini:
+```
+🎯 Target: Rp285.000/hari
+├── Kewajiban: Rp50.000
+├── Cicilan hutang: Rp35.000
+├── Operasional: Rp120.000
+├── Tabungan: Rp50.000
+└── Buffer 10%: Rp28.500
+
+📊 Progress: ████████░░ 78% (Rp222.400)
 ```
 
 ### ✏️ Edit & Hapus
 ```
-"yang makan tadi salah, harusnya 20rb"   → Edit transaksi
-"hapus yang bensin"                       → Hapus transaksi
-"yang hutang ke Budi salah, harusnya 300rb" → Edit hutang
+"yang bensin tadi ubah jadi 35rb"
+"hapus yang rokok"
+"yang terakhir salah, harusnya 250rb"
 ```
+2-step delete confirmation untuk keamanan.
 
-## 🏗️ Arsitektur
+---
 
-```
-Telegram User
-    │
-    ▼
-┌─────────────────────┐
-│   Telegram Bot API   │  (grammY)
-│   Webhook Handler    │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│   Cloudflare Worker  │  (TypeScript)
-│                      │
-│  ┌──────────────┐   │
-│  │   AI Engine   │   │  OpenAI-compatible (Workers AI)
-│  │  NLP → Tools  │   │  Function calling
-│  └──────┬───────┘   │
-│         │            │
-│  ┌──────▼───────┐   │
-│  │   Services    │   │  Business logic
-│  │  Router       │   │  Transaction, Debt, Target
-│  └──────┬───────┘   │
-│         │            │
-│  ┌──────▼───────┐   │
-│  │   D1 Database │   │  SQLite (serverless)
-│  └──────────────┘   │
-└─────────────────────┘
-```
+## 📱 Slash Commands
 
-## 🛠️ Tech Stack
+| Command | Fungsi |
+|---------|--------|
+| `/start` | Mulai & panduan |
+| `/help` | Panduan penggunaan |
+| `/rekap` | Rekap keuangan hari ini |
+| `/target` | Target harian + progress |
+| `/hutang` | Daftar hutang aktif |
+| `/reset` | Hapus semua data |
 
-| Layer | Teknologi | Alasan |
-|-------|-----------|--------|
-| **Runtime** | Cloudflare Workers | Serverless, edge-deployed, gratis 100k req/hari |
-| **Bot Framework** | grammY | Lightweight, TypeScript-first, Cloudflare-friendly |
-| **AI/NLP** | Workers AI (OpenAI-compatible) | Function calling, bahasa Indonesia |
-| **Database** | Cloudflare D1 (SQLite) | Serverless SQL, zero-config, free tier |
-| **Language** | TypeScript | Type safety, DX |
-| **CI/CD** | GitHub Actions | Auto deploy on push to main |
-| **Testing** | Vitest | Fast, Workers-compatible |
+Semua command **zero AI** — langsung query database, 0 neurons.
 
-## 📁 Struktur Project
+---
+
+## 🏗️ Tech Stack
+
+| Layer | Teknologi |
+|-------|----------|
+| Runtime | Cloudflare Workers (serverless, edge) |
+| Bot | grammY (TypeScript, webhook mode) |
+| AI | Llama 4 Scout 17B (single model: slang + function calling) |
+| OCR | OCR.space Engine 2 |
+| Parser | Regex-based (Shopee: food + SPX) |
+| Database | Cloudflare D1 (SQLite) |
+| KV | Cloudflare KV (rate limit, dedup, daily counter) |
+| Tests | Vitest — **332 tests** |
+| CI/CD | GitHub Actions (test → migrate → deploy) |
+
+### Architecture
 
 ```
-ojol-cuanbot/
-├── src/
-│   ├── index.ts              # Cloudflare Worker entry point
-│   ├── bot.ts                # grammY bot setup
-│   ├── ai/
-│   │   ├── prompt.ts         # System prompt & rules
-│   │   └── tools.ts          # AI function definitions
-│   ├── config/
-│   │   └── env.ts            # Environment config
-│   ├── db/
-│   │   ├── repository.ts     # Core DB queries
-│   │   └── repository-target.ts # Target-related queries
-│   ├── handlers/
-│   │   └── message.ts        # Telegram message handler
-│   ├── services/
-│   │   ├── router.ts         # Tool call router
-│   │   ├── transaction.ts    # Income/expense logic
-│   │   ├── debt.ts           # Hutang/piutang + smart debt
-│   │   ├── edit.ts           # Edit/delete transactions
-│   │   ├── edit-debt.ts      # Edit/delete debts
-│   │   ├── summary.ts        # Rekap keuangan
-│   │   └── target.ts         # Smart daily target
-│   ├── types/
-│   │   └── transaction.ts    # TypeScript interfaces
-│   └── utils/
-│       ├── formatter.ts      # Response formatting (Telegram HTML)
-│       ├── date.ts           # Date utilities (WIB timezone)
-│       └── validator.ts      # Input validation & sanitization
-├── migrations/
-│   ├── 0001_init.sql         # Users, transactions, debts, categories
-│   ├── 0002_smart_target.sql # Obligations, goals, user_settings
-│   └── 0003_smart_debt.sql   # Due date, interest, installments
-├── test/
-│   └── services/
-│       ├── transaction.spec.ts
-│       └── debt.spec.ts      # Interest calc, overdue, next payment
-├── .github/
-│   └── workflows/
-│       └── deploy.yml        # CI/CD: test → deploy
-├── wrangler.jsonc             # Cloudflare config
-├── package.json
-└── tsconfig.json
+[Telegram] → [CF Worker] → [grammY Bot]
+                               |
+         ┌─────────────────────┼─────────────────────┐
+         │                     │                     │
+     /command              text msg              photo msg
+     (zero AI)           (single model)        (OCR pipeline)
+         │                     │                     │
+     Direct DB          Llama 4 Scout          OCR.space → Parser
+                        (slang table in             │
+                         prompt + FC)          Known? → DB
+                               │               Unknown? → AI
+                               │                     │
+                          Service Router ←────────────┘
+                               │
+                          Cloudflare D1
 ```
 
-## 🚀 Setup & Deploy
+### Single Model Pipeline
+Kenapa 1 model saja?
+- **Llama 4 Scout** cukup kuat handle slang Indonesia via tabel di system prompt
+- Function calling reliable dalam satu panggilan
+- Latency lebih rendah (1 AI call vs 2 sequential)
+- Complexity pipeline berkurang signifikan
+
+### Dynamic Tool Selection (Fase F)
+Regex pre-filter kirim hanya 4-6 tools (dari 15) per request → hemat tokens.
+
+### Local Parser (Shopee)
+Kenapa regex, bukan AI?
+- Screenshot Shopee format konsisten → regex cukup
+- **0ms** parse (vs 3-5s AI) → jauh lebih cepat
+- **0 AI calls** → hemat daily neurons budget
+- 3-pass: ShopeeFood → SPX → fallback
+
+---
+
+## 📂 Project Structure
+
+```
+src/
+├── index.ts          # Worker entry
+├── bot.ts            # grammY setup + command routing
+├── ai/               # Single model pipeline (engine, executor, parser, prompt,
+│                     #   toolRouter, tools, utils, validator)
+├── config/           # Environment types
+├── db/               # Repository layer (all SQL queries)
+├── handlers/         # Command + message + photo handlers
+├── middleware/        # Rate limit, input guard
+├── parsers/          # OCR format detection + Shopee parser
+├── services/         # Business logic (transaction, debt, target, etc.)
+├── types/            # TypeScript interfaces
+└── utils/            # Formatter, date, validator
+
+migrations/           # D1 SQL migrations (auto-applied on deploy)
+test/                 # 332 tests mirroring src/ structure
+```
+
+---
+
+## 🚀 Development
 
 ### Prerequisites
-- Node.js ≥ 18
+- Node.js 18+
 - Cloudflare account (free tier)
-- Telegram Bot Token (dari [@BotFather](https://t.me/BotFather))
+- Telegram Bot token (from @BotFather)
+- OCR.space API key (free tier, optional)
 
-### 1. Clone & Install
+### Setup
 ```bash
-git clone https://github.com/lukim7711/ojol-cuanbot.git
-cd ojol-cuanbot
 npm install
-```
 
-### 2. Setup Cloudflare D1
-```bash
-npx wrangler login
-npx wrangler d1 create cuanbot-db
-```
+# Set secrets
+npx wrangler secret put BOT_TOKEN
+npx wrangler secret put OCR_API_KEY
 
-Update `wrangler.jsonc` dengan database ID yang didapat.
+# Apply migrations
+npx wrangler d1 migrations apply cuanbot-db --local   # local dev
+npx wrangler d1 migrations apply cuanbot-db --remote  # production
 
-### 3. Run Migrations
-```bash
-npx wrangler d1 execute DB --remote --file=migrations/0001_init.sql
-npx wrangler d1 execute DB --remote --file=migrations/0002_smart_target.sql
-npx wrangler d1 execute DB --remote --file=migrations/0003_smart_debt.sql
-```
+# Dev
+npx wrangler dev
 
-### 4. Set Secrets
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put AI_API_KEY
-```
-
-### 5. Deploy
-```bash
-npm run deploy
-```
-
-### 6. Set Webhook
-```bash
-curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<WORKER_URL>/webhook"
-```
-
-## 🧪 Testing
-
-```bash
-# Run all tests
+# Test
 npm test
 
-# Run specific test
-npx vitest run test/services/debt.spec.ts
+# Deploy
+npx wrangler deploy
 ```
 
-Test coverage:
-- Interest calculation (flat, daily, no interest)
-- Overdue detection (overdue, urgent, soon, ok)
-- Next payment date calculation (monthly, weekly, daily)
-- Amount parsing dan validation
+### CI/CD
+- **CI**: Tests run on every push/PR to `main`
+- **CD**: Push to `main` → test → migrate D1 → deploy worker
+- Zero terminal lokal needed for deployment
 
-## 📊 Database Schema
+---
 
-### Core Tables
-- **users** — Telegram user mapping
-- **transactions** — Pemasukan & pengeluaran
-- **categories** — Kategori transaksi
-- **debts** — Hutang/piutang + due date, bunga, cicilan
-- **debt_payments** — Riwayat pembayaran hutang
+## 🤖 AI Context
 
-### Target Tables
-- **obligations** — Kewajiban tetap (cicilan, kontrakan)
-- **goals** — Target nabung (beli sesuatu)
-- **user_settings** — Pengaturan user (tabungan harian, dll)
+Untuk melanjutkan development di percakapan AI baru, baca [`AI_CONTEXT.md`](./AI_CONTEXT.md) — berisi dokumentasi lengkap arsitektur, schema, fitur, dan workflow.
 
-### Conversation
-- **conversation_logs** — Riwayat chat untuk context AI
+```
+"Baca file AI_CONTEXT.md di repo lukim7711/ojol-cuanbot branch main,
+ lalu lanjutkan dari situ. Saya mau [tambah fitur X]."
+```
 
-## 🔮 Roadmap
+---
 
-- [ ] Potongan platform otomatis (Grab 20%, Gojek 20%, dll)
-- [ ] Multi-user support
-- [ ] Notifikasi/reminder jatuh tempo
-- [ ] Export data (PDF/CSV rekap bulanan)
-- [ ] Dashboard web dengan grafik
+## 📊 Stats
 
-## 📄 License
+- **Model**: Llama 4 Scout 17B (single model)
+- **Tests**: 332 (all pass)
+- **Source files**: 30+
+- **Migrations**: 3
+- **AI tools**: 15 definitions, 5 groups
+- **Commands**: 7 slash commands
+- **Parsers**: 1 (Shopee: food + SPX)
 
-MIT © 2026
+---
+
+*Built with ❤️ for Indonesian ojol drivers*

@@ -7,7 +7,7 @@
  * 3. OCR via OCR.space (extract text)
  * 4. Clean OCR text (remove noise)
  * 5. TRY local parser first (regex, 0ms, no AI)
- *    → If known format (ShopeeFood, SPX, etc.) → record directly
+ *    → If known format (Shopee) → record directly
  * 6. FALLBACK to AI pipeline (same as before)
  *    → If unknown format → AI parses text
  *
@@ -152,9 +152,19 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
     const parseResult = tryParseOCR(cleanedForParser);
 
     if (parseResult && parseResult.transactions.length > 0) {
+      // Count food vs package orders for metadata
+      const foodCount = parseResult.transactions.filter(
+        (t) => t.description.startsWith("ShopeeFood")
+      ).length;
+      const spxCount = parseResult.transactions.filter(
+        (t) => t.description.startsWith("SPX")
+      ).length;
+      const otherCount = parseResult.transactions.length - foodCount - spxCount;
+
       console.log(
         `[Photo] ✅ Local parser: ${parseResult.format}, ` +
-        `${parseResult.transactions.length} transactions, ` +
+        `${parseResult.transactions.length} transactions ` +
+        `(food=${foodCount}, spx=${spxCount}, other=${otherCount}), ` +
         `dateOffset=${parseResult.dateOffset}, ` +
         `confidence=${parseResult.confidence}`
       );
@@ -179,8 +189,13 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
       // Format and send reply
       const reply = formatReply([result], null);
       if (reply && reply.trim().length > 0) {
-        // Add parser metadata to reply
-        const meta = `\n\n📋 <i>Auto-parsed dari ${formatLabel(parseResult.format)} (${parseResult.transactions.length} order)</i>`;
+        // Build metadata label
+        const parts: string[] = [];
+        if (foodCount > 0) parts.push(`${foodCount} food`);
+        if (spxCount > 0) parts.push(`${spxCount} paket`);
+        if (otherCount > 0) parts.push(`${otherCount} lainnya`);
+        const meta = `\n\n📋 <i>Auto-parsed dari Shopee (${parts.join(", ")})</i>`;
+
         await ctx.reply(reply + meta, { parse_mode: "HTML" });
 
         await saveConversation(
@@ -255,19 +270,6 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 }
 
 /**
- * Format label for user-facing messages.
- */
-function formatLabel(format: string): string {
-  const labels: Record<string, string> = {
-    shopeefood: "ShopeeFood",
-    spx: "SPX Express",
-    grab: "GrabFood",
-    gopay: "GoPay",
-  };
-  return labels[format] || format;
-}
-
-/**
  * Clean OCR text for local parser.
  *
  * Less aggressive than AI cleaning — we want to preserve structure
@@ -294,8 +296,6 @@ function cleanOCRForParser(text: string): string {
     .filter((line) => {
       const trimmed = line.trim();
       if (!trimmed) return false;
-      // Keep lines that have time patterns or Rp amounts
-      // Remove standalone noise
       if (/^>\s*$/.test(trimmed)) return false;
       if (/^pesanan gabungan\s*$/i.test(trimmed)) return false;
       return true;
@@ -312,13 +312,8 @@ function cleanOCRForParser(text: string): string {
 // AI FALLBACK HELPERS (existing, unchanged)
 // ============================================
 
-/**
- * Maximum OCR text length to send to AI.
- * Bug #9 fix (v2): Reduced from 800 → 500.
- */
 const MAX_OCR_CHARS = 500;
 
-/** Noise patterns for AI prompt cleaning */
 const OCR_NOISE_PATTERNS = [
   /alamat pelanggan disembunyikan/gi,
   /alamat pengirim disembunyikan/gi,
@@ -331,9 +326,6 @@ const OCR_NOISE_LINES = [
   /^pesanan gabungan\s*$/i,
 ];
 
-/**
- * Build AI prompt from OCR text (used only for unknown formats).
- */
 function buildOCRPrompt(ocrText: string, caption?: string): string {
   let cleanedText = ocrText;
   for (const pattern of OCR_NOISE_PATTERNS) {

@@ -89,10 +89,11 @@ describe("OCR text cleaning (Bug #9 v2)", () => {
     expect(cleaned.length).toBeLessThan(shopeeText.length * 0.6);
   });
 
-  it("collapses multiple blank lines", () => {
+  it("removes blank lines entirely (filter strips empty lines)", () => {
     const input = "line1\n\n\n\n\nline2\n\n\nline3";
     const result = cleanOCRText(input);
-    expect(result).toBe("line1\n\nline2\n\nline3");
+    // Blank lines are removed by filter(!trimmed), not collapsed
+    expect(result).toBe("line1\nline2\nline3");
   });
 });
 

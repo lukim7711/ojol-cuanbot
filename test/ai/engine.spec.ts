@@ -137,7 +137,20 @@ describe("validateToolCalls", () => {
     expect(txns[1].amount).toBe(50000);
   });
 
-  it("deduplicates same tool called multiple times", () => {
+  it("deduplicates truly identical tool calls (same name + same args)", () => {
+    const result: AIResult = {
+      toolCalls: [
+        { name: "get_debts", arguments: { type: "all" } },
+        { name: "get_debts", arguments: { type: "all" } },
+      ],
+      textResponse: null,
+    };
+
+    const validated = validateToolCalls(result);
+    expect(validated.toolCalls.length).toBe(1);
+  });
+
+  it("keeps same tool with different arguments — Bug #11", () => {
     const result: AIResult = {
       toolCalls: [
         { name: "get_debts", arguments: { type: "all" } },
@@ -147,7 +160,8 @@ describe("validateToolCalls", () => {
     };
 
     const validated = validateToolCalls(result);
-    expect(validated.toolCalls.length).toBe(1);
+    // Different args → both kept (Bug #11 fix)
+    expect(validated.toolCalls.length).toBe(2);
   });
 
   it("removes debt tool call with invalid amount (negative)", () => {

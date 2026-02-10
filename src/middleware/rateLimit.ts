@@ -2,13 +2,13 @@
  * Per-user Rate Limiter (Cloudflare KV)
  *
  * Limits messages per user within a time window.
- * Uses KV with TTL — state persists across Worker cold starts.
+ * Uses KV with absolute expiration — state persists across Worker cold starts.
  *
  * Config: 30 messages per 60 seconds per user.
  *
  * KV key format: rl:{userId}
  * KV value: JSON { count: number, start: number (epoch seconds) }
- * KV TTL: WINDOW_SECONDS (auto-cleanup by Cloudflare)
+ * KV expiration: absolute epoch = start + WINDOW_SECONDS
  */
 
 const MAX_MESSAGES = 30;
@@ -38,8 +38,9 @@ export async function isRateLimited(
 
     // No entry or window expired → start fresh
     if (!data || now - data.start >= WINDOW_SECONDS) {
-      await kv.put(key, JSON.stringify({ count: 1, start: now }), {
-        expirationTtl: WINDOW_SECONDS,
+      const windowStart = now;
+      await kv.put(key, JSON.stringify({ count: 1, start: windowStart }), {
+        expiration: windowStart + WINDOW_SECONDS,
       });
       return false;
     }
@@ -52,12 +53,11 @@ export async function isRateLimited(
       return true;
     }
 
-    // Increment counter, keep remaining TTL
-    const remainingTtl = WINDOW_SECONDS - (now - data.start);
+    // Increment counter, keep same absolute expiration
     await kv.put(
       key,
       JSON.stringify({ count: data.count + 1, start: data.start }),
-      { expirationTtl: Math.max(remainingTtl, 1) }
+      { expiration: data.start + WINDOW_SECONDS }
     );
     return false;
   } catch (error) {

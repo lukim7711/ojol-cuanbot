@@ -4,6 +4,7 @@
  * No more Qwen NLU stage — slang conversion is in-context via system prompt.
  *
  * Phase 3: Added daily AI call tracking via KV.
+ * Phase 4: Fixed daily limit TTL to reset at midnight WIB (Bug 6 fix).
  */
 
 import { Env } from "../config/env";
@@ -22,8 +23,40 @@ const AI_PIPELINE_TIMEOUT_MS = 15_000; // 15 seconds
 const DAILY_AI_CALL_LIMIT = 200;
 
 /**
+ * Calculate the epoch timestamp (seconds) for the next midnight WIB (UTC+7).
+ * Used as absolute `expiration` for KV daily counters so they reset
+ * at a consistent time regardless of when the last message was sent.
+ *
+ * Bug 6 fix: Previously used relative `expirationTtl: 86400` which
+ * caused the TTL to roll forward with every increment — counter never
+ * reset at a predictable "new day" boundary.
+ *
+ * Example:
+ *   Now = 2026-02-10 11:00 WIB (04:00 UTC)
+ *   Next midnight WIB = 2026-02-11 00:00 WIB (2026-02-10 17:00 UTC)
+ *   Return = epoch of 2026-02-10T17:00:00Z
+ */
+export function getNextMidnightWIBEpoch(): number {
+  const WIB_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7 in milliseconds
+
+  // Shift current UTC time to WIB frame for date calculation
+  const nowWIB = new Date(Date.now() + WIB_OFFSET_MS);
+
+  // Tomorrow at 00:00:00 in WIB frame
+  const nextMidnightWIB = new Date(Date.UTC(
+    nowWIB.getUTCFullYear(),
+    nowWIB.getUTCMonth(),
+    nowWIB.getUTCDate() + 1,
+    0, 0, 0, 0
+  ));
+
+  // Convert back from WIB frame to real UTC epoch seconds
+  return Math.floor((nextMidnightWIB.getTime() - WIB_OFFSET_MS) / 1000);
+}
+
+/**
  * Check and increment daily AI call count for a user.
- * Uses KV with TTL that expires at end of day (max 24h).
+ * Uses KV with absolute expiration at next midnight WIB.
  * Returns true if the user has exceeded the daily limit.
  *
  * Fail-open: if KV errors, allow the request.
@@ -36,10 +69,11 @@ async function isDailyLimitExceeded(
 
   try {
     const current = await kv.get<number>(key, "json");
+    const expiration = getNextMidnightWIBEpoch();
 
     if (current === null) {
-      // First call today — set counter with 24h TTL
-      await kv.put(key, "1", { expirationTtl: 86400 });
+      // First call today — set counter with absolute expiration at midnight WIB
+      await kv.put(key, "1", { expiration });
       return false;
     }
 
@@ -50,10 +84,8 @@ async function isDailyLimitExceeded(
       return true;
     }
 
-    // Increment (keep existing TTL by not setting a new one —
-    // KV put without expirationTtl on existing key preserves nothing,
-    // so we set a safe 24h TTL each time)
-    await kv.put(key, JSON.stringify(current + 1), { expirationTtl: 86400 });
+    // Increment counter, keep expiration at next midnight WIB
+    await kv.put(key, JSON.stringify(current + 1), { expiration });
     return false;
   } catch (error) {
     // Fail-open

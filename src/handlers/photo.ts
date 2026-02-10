@@ -194,15 +194,20 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 /**
  * Maximum OCR text length to send to AI.
  *
- * Bug #9 fix: OCR screenshots with many entries (e.g. full-day ShopeeFood
- * history) can produce 1000-2000+ chars. Combined with the system prompt
- * and tool definitions, this exceeds Llama Scout's input token limit,
- * causing Workers AI error 3030 (Internal Server Error).
+ * Bug #9 fix (v2): Reduced from 800 → 500.
+ * At 800 chars, cleaned text (746 chars) still caused 3030 when
+ * combined with system prompt (~500 tokens) + tool defs (~800 tokens).
  *
- * 800 chars is enough for ~8-10 transactions (typical receipt/screenshot)
- * while staying safely within the model's context window.
+ * Token budget estimate:
+ *   Llama Scout context: ~8192 tokens
+ *   System prompt: ~500 tokens
+ *   Tool definitions (4 tools): ~800 tokens
+ *   OCR text (500 chars): ~150 tokens
+ *   Wrapper prompt: ~100 tokens
+ *   Response budget: ~500 tokens
+ *   Safety margin: ~6000 tokens
  */
-const MAX_OCR_CHARS = 800;
+const MAX_OCR_CHARS = 500;
 
 /**
  * Noise patterns commonly found in OCR output from ojol screenshots.
@@ -212,28 +217,57 @@ const OCR_NOISE_PATTERNS = [
   /alamat pelanggan disembunyikan/gi,
   /alamat pengirim disembunyikan/gi,
   /^\s*$/gm,                          // blank lines
+  /\t+/g,                             // tab characters → space
+];
+
+/**
+ * Lines that contain only non-financial noise (no Rp amount).
+ * Used as secondary filter after pattern removal.
+ */
+const OCR_NOISE_LINES = [
+  /^>\s*$/,                            // lone ">" from UI
+  /^\d\/\d+\s*$/,                      // lone "1/9" without amount
+  /^pesanan gabungan\s*$/i,            // standalone label
 ];
 
 /**
  * Build AI prompt from OCR-extracted text.
  * Adds context so AI knows this is from an image, not typed text.
  *
- * Bug #9 fix:
- * 1. Remove noisy repetitive lines (e.g. "Alamat Pelanggan disembunyikan")
- * 2. Truncate to MAX_OCR_CHARS to prevent token overflow
- * 3. Add note about truncation so AI knows data may be incomplete
+ * Bug #9 fix (v2): Aggressive cleaning + lower truncation limit.
+ * Pipeline:
+ *   1. Remove known noise patterns (addresses, tabs, blanks)
+ *   2. Remove noise-only lines (UI artifacts)
+ *   3. Collapse whitespace
+ *   4. Truncate to MAX_OCR_CHARS at last complete line
  */
 function buildOCRPrompt(ocrText: string, caption?: string): string {
-  // Step 1: Clean noise from OCR text
+  // Step 1: Clean noise patterns
   let cleanedText = ocrText;
   for (const pattern of OCR_NOISE_PATTERNS) {
-    cleanedText = cleanedText.replace(pattern, "");
+    cleanedText = cleanedText.replace(pattern, pattern === /\t+/g ? " " : "");
   }
 
-  // Collapse multiple newlines into single
-  cleanedText = cleanedText.replace(/\n{3,}/g, "\n\n").trim();
+  // Replace tabs with spaces (the regex replace above may not catch all)
+  cleanedText = cleanedText.replace(/\t+/g, " ");
 
-  // Step 2: Truncate if too long
+  // Step 2: Remove noise-only lines
+  cleanedText = cleanedText
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      return !OCR_NOISE_LINES.some((p) => p.test(trimmed));
+    })
+    .join("\n");
+
+  // Step 3: Collapse multiple newlines and spaces
+  cleanedText = cleanedText
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/ {2,}/g, " ")
+    .trim();
+
+  // Step 4: Truncate if too long
   let wasTruncated = false;
   if (cleanedText.length > MAX_OCR_CHARS) {
     // Try to cut at last complete line within limit
@@ -247,7 +281,7 @@ function buildOCRPrompt(ocrText: string, caption?: string): string {
     (wasTruncated ? " (truncated)" : "")
   );
 
-  // Step 3: Build prompt
+  // Step 5: Build prompt
   let prompt = "";
 
   if (caption) {

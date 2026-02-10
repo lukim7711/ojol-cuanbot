@@ -29,10 +29,56 @@ import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
 import { isRateLimited } from "../middleware/rateLimit";
 
+/**
+ * Check if a photo message was already processed using KV.
+ * Same pattern as message.ts dedup — prevents duplicate transactions
+ * when Telegram retries webhook after timeout.
+ *
+ * KV key format: dedup:{chatId}:{messageId}
+ * KV TTL: 300 seconds (5 minutes)
+ */
+const DEDUP_TTL_SECONDS = 300;
+
+async function isDuplicatePhoto(
+  kv: KVNamespace,
+  chatId: number | undefined,
+  messageId: number | undefined
+): Promise<boolean> {
+  if (!chatId || !messageId) return false;
+
+  const key = `dedup:${chatId}:${messageId}`;
+
+  try {
+    const existing = await kv.get(key);
+    if (existing) return true;
+
+    // Mark as processed with TTL
+    await kv.put(key, "1", { expirationTtl: DEDUP_TTL_SECONDS });
+    return false;
+  } catch (error) {
+    // If KV fails, allow the request (fail-open)
+    console.error("[Dedup:Photo] KV error, failing open:", error);
+    return false;
+  }
+}
+
 export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
   if (!ctx.from || !ctx.message?.photo) return;
 
   const telegramId = String(ctx.from.id);
+
+  // ============================================
+  // IDEMPOTENCY GUARD (KV-based) — Bug 3 fix
+  // ============================================
+  const duplicate = await isDuplicatePhoto(
+    env.RATE_LIMIT,
+    ctx.chat?.id,
+    ctx.message?.message_id
+  );
+  if (duplicate) {
+    console.warn(`[Dedup:Photo] Skipping duplicate photo: ${ctx.chat?.id}:${ctx.message?.message_id}`);
+    return;
+  }
 
   // Rate limit check (KV-based)
   if (await isRateLimited(env.RATE_LIMIT, telegramId)) {
@@ -109,12 +155,13 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
     // 8. Run AI pipeline (same as text messages)
     const aiResult = await runAI(env, user.id, ocrPrompt, conversationHistory);
 
-    // 9. Process tool calls
+    // 9. Process tool calls (pass KV for delete confirmation)
     const results = await processToolCalls(
       env.DB,
       user,
       aiResult.toolCalls,
-      ocrPrompt
+      ocrPrompt,
+      env.RATE_LIMIT
     );
 
     // 10. Format reply

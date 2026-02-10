@@ -126,12 +126,13 @@ export async function handleMessage(
     // 4. Run AI engine (use CLEANED text — stripped of injection patterns)
     const aiResult = await runAI(env, user.id, cleanedText, conversationHistory);
 
-    // 5. Process tool calls
+    // 5. Process tool calls (pass KV for delete confirmation)
     const results = await processToolCalls(
       env.DB,
       user,
       aiResult.toolCalls,
-      cleanedText
+      cleanedText,
+      env.RATE_LIMIT
     );
 
     // 6. Format reply

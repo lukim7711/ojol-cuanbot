@@ -44,7 +44,8 @@ export async function processToolCalls(
   db: D1Database,
   user: User,
   toolCalls: Array<{ name: string; arguments: any }>,
-  sourceText: string
+  sourceText: string,
+  kv: KVNamespace
 ): Promise<ToolCallResult[]> {
   const results: ToolCallResult[] = [];
   let hasIncome = false;
@@ -53,12 +54,12 @@ export async function processToolCalls(
   // CHECK: Is this a confirmation reply? ("ya" / "batal")
   // ============================================
   const lowerSource = sourceText.toLowerCase().trim();
-  const pending = getPendingDelete(String(user.id));
+  const pending = await getPendingDelete(kv, String(user.id));
 
   if (pending) {
     if (lowerSource === "ya" || lowerSource === "iya" || lowerSource === "yes" || lowerSource === "y") {
       // User confirmed — execute the pending delete
-      clearPendingDelete(String(user.id));
+      await clearPendingDelete(kv, String(user.id));
 
       if (pending.type === "transaction") {
         results.push(await editOrDeleteTransaction(db, user, pending.args));
@@ -68,12 +69,12 @@ export async function processToolCalls(
       return results;
     } else if (lowerSource === "batal" || lowerSource === "cancel" || lowerSource === "tidak" || lowerSource === "no" || lowerSource === "n" || lowerSource === "ga" || lowerSource === "gak" || lowerSource === "nggak") {
       // User cancelled
-      clearPendingDelete(String(user.id));
+      await clearPendingDelete(kv, String(user.id));
       results.push({ type: "clarification", data: null, message: "✅ Oke, dibatalin. Data lo aman." });
       return results;
     } else {
       // User sent something else — clear pending and process normally
-      clearPendingDelete(String(user.id));
+      await clearPendingDelete(kv, String(user.id));
     }
   }
 
@@ -118,7 +119,7 @@ export async function processToolCalls(
         // ============================================
         if (call.arguments.action === "delete") {
           // Store pending delete, ask for confirmation
-          setPendingDelete(String(user.id), {
+          await setPendingDelete(kv, String(user.id), {
             type: "transaction",
             args: call.arguments,
             description: call.arguments.target || "transaksi terakhir",
@@ -144,7 +145,7 @@ export async function processToolCalls(
         // DELETE CONFIRMATION: Ask before deleting debt
         // ============================================
         if (call.arguments.action === "delete") {
-          setPendingDelete(String(user.id), {
+          await setPendingDelete(kv, String(user.id), {
             type: "debt",
             args: call.arguments,
             description: call.arguments.person_name || "hutang",

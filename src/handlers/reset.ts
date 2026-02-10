@@ -3,14 +3,16 @@ import { Env } from "../config/env";
 import { findUserByTelegram, resetAllUserData } from "../db/repository";
 
 /**
- * Pending reset confirmations.
- * Key: telegram user ID, Value: expiry timestamp (ms).
+ * Pending reset confirmations (KV-backed).
  *
- * NOTE: In-memory — acceptable here because reset is rare & manual.
- * Worst case if Worker instance changes: user just has to /reset again.
+ * KV key format: reset:{telegramId}
+ * KV value: "1" (just a flag)
+ * KV TTL: 60 seconds — auto-cleanup by Cloudflare
+ *
+ * Previously used in-memory Map which broke on cold starts.
+ * Now survives Worker instance changes.
  */
-const pendingResets = new Map<string, number>();
-const CONFIRM_WINDOW_MS = 60_000; // 60 seconds
+const CONFIRM_WINDOW_SECONDS = 60;
 
 /**
  * /reset — Step 1: Ask for confirmation.
@@ -29,11 +31,19 @@ export async function handleReset(ctx: Context, env: Env) {
     return;
   }
 
-  // Set pending confirmation with expiry
-  pendingResets.set(telegramId, Date.now() + CONFIRM_WINDOW_MS);
-
-  // Cleanup old entries
-  cleanupPendingResets();
+  // Set pending confirmation with TTL in KV
+  try {
+    const key = `reset:${telegramId}`;
+    await env.RATE_LIMIT.put(key, "1", {
+      expirationTtl: CONFIRM_WINDOW_SECONDS,
+    });
+  } catch (error) {
+    console.error("[Reset] KV write error:", error);
+    await ctx.reply("⚠️ Gagal memproses request. Coba lagi ya bos.", {
+      parse_mode: "HTML",
+    });
+    return;
+  }
 
   await ctx.reply(
     "⚠️ <b>YAKIN mau hapus SEMUA data keuangan lo?</b>\n\n" +
@@ -58,10 +68,28 @@ export async function handleConfirmReset(ctx: Context, env: Env) {
 
   const telegramId = String(ctx.from.id);
 
-  // Check if there's a pending reset
-  const expiry = pendingResets.get(telegramId);
-  if (!expiry || Date.now() > expiry) {
-    pendingResets.delete(telegramId);
+  // Check if there's a pending reset in KV
+  let hasPending = false;
+  try {
+    const key = `reset:${telegramId}`;
+    const value = await env.RATE_LIMIT.get(key);
+    hasPending = value !== null;
+
+    // Clear the pending flag regardless of outcome
+    if (hasPending) {
+      await env.RATE_LIMIT.delete(key);
+    }
+  } catch (error) {
+    console.error("[Reset] KV read error:", error);
+    // Fail-closed for destructive operation: if KV fails, reject
+    await ctx.reply(
+      "⚠️ Gagal verifikasi request. Coba /reset lagi ya bos.",
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  if (!hasPending) {
     await ctx.reply(
       "❌ Tidak ada permintaan reset aktif.\n" +
         "Ketik /reset dulu kalau mau hapus data.",
@@ -69,9 +97,6 @@ export async function handleConfirmReset(ctx: Context, env: Env) {
     );
     return;
   }
-
-  // Clear the pending flag
-  pendingResets.delete(telegramId);
 
   const user = await findUserByTelegram(env.DB, telegramId);
   if (!user) {
@@ -120,16 +145,4 @@ export async function handleConfirmReset(ctx: Context, env: Env) {
   lines.push("\nAkun lo masih aktif — tinggal mulai catat lagi! 🚀");
 
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
-}
-
-/**
- * Remove expired pending resets to prevent memory leak.
- */
-function cleanupPendingResets(): void {
-  const now = Date.now();
-  for (const [id, expiry] of pendingResets.entries()) {
-    if (now > expiry) {
-      pendingResets.delete(id);
-    }
-  }
 }

@@ -48,15 +48,17 @@ describe("isRateLimited — Bug #8 fix", () => {
   });
 
   it("allows first message and creates KV entry with absolute expiration", async () => {
-    vi.setSystemTime(new Date("2026-02-10T05:00:00Z")); // epoch 1770818400
+    const fakeNow = new Date("2026-02-10T05:00:00Z");
+    vi.setSystemTime(fakeNow);
+    const epochStart = Math.floor(fakeNow.getTime() / 1000);
 
     const result = await isRateLimited(mockKV, "user1");
 
     expect(result).toBe(false);
     expect(mockKV.put).toHaveBeenCalledWith(
       "rl:user1",
-      expect.any(String),
-      { expiration: 1770818400 + 60 } // absolute, not TTL
+      JSON.stringify({ count: 1, start: epochStart }),
+      { expiration: epochStart + 60 }
     );
   });
 
@@ -99,11 +101,12 @@ describe("isRateLimited — Bug #8 fix", () => {
   it("blocks user after MAX_MESSAGES within window", async () => {
     const start = new Date("2026-02-10T05:00:00Z");
     vi.setSystemTime(start);
+    const epochStart = Math.floor(start.getTime() / 1000);
 
     // Seed KV with count at limit
     kvStore["rl:spammer"] = {
-      value: JSON.stringify({ count: 30, start: Math.floor(start.getTime() / 1000) }),
-      expiration: Math.floor(start.getTime() / 1000) + 60,
+      value: JSON.stringify({ count: 30, start: epochStart }),
+      expiration: epochStart + 60,
     };
 
     vi.setSystemTime(new Date("2026-02-10T05:00:30Z")); // within window
@@ -115,11 +118,12 @@ describe("isRateLimited — Bug #8 fix", () => {
   it("resets after window expires", async () => {
     const start = new Date("2026-02-10T05:00:00Z");
     vi.setSystemTime(start);
+    const epochStart = Math.floor(start.getTime() / 1000);
 
     // Seed KV with count at limit
     kvStore["rl:user2"] = {
-      value: JSON.stringify({ count: 30, start: Math.floor(start.getTime() / 1000) }),
-      expiration: Math.floor(start.getTime() / 1000) + 60,
+      value: JSON.stringify({ count: 30, start: epochStart }),
+      expiration: epochStart + 60,
     };
 
     // Jump past window

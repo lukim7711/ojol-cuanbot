@@ -84,9 +84,10 @@ describe("parseShopeeFood", () => {
     const result = parseShopeeFood(text);
 
     expect(result.length).toBe(3);
-    expect(result[0].amount).toBe(32800);  // sorted descending by time
-    expect(result[1].amount).toBe(30400);
-    expect(result[2].amount).toBe(27200);
+    // Sorted descending by time: 18:25 > 17:06 > 16:00
+    expect(result[0].amount).toBe(27200);  // 18:25 (latest)
+    expect(result[1].amount).toBe(30400);  // 17:06
+    expect(result[2].amount).toBe(32800);  // 16:00 (earliest)
   });
 
   it("deduplicates same time+amount", () => {
@@ -121,8 +122,6 @@ describe("parseShopeeFood", () => {
   // REAL-WORLD TEST: Actual OCR from live test
   // ============================================
   it("parses full real-world ShopeeFood screenshot (9 orders, 1369 chars raw)", () => {
-    // This is the actual OCR output from the user's live test
-    // that caused the AI timeout (Bug #12)
     const realOCR = [
       "09 Feb 2026 ~",
       "22:30 If ShapeeFoodPesanan GabunganRp18,400",
@@ -153,7 +152,7 @@ describe("parseShopeeFood", () => {
     // ALL 9 orders should be parsed
     expect(result.length).toBe(9);
 
-    // Verify amounts (sorted by time descending)
+    // Verify all amounts exist (order-independent)
     const amounts = result.map((t) => t.amount);
     expect(amounts).toContain(18400);  // 22:30
     expect(amounts).toContain(12000);  // 21:43
@@ -174,10 +173,14 @@ describe("parseShopeeFood", () => {
       expect(t.type).toBe("income");
       expect(t.category).toBe("orderan");
     }
+
+    // Verify sort: first result should be latest time (22:30)
+    expect(result[0].description).toBe("ShopeeFood 22:30");
+    // Last result should be earliest time (16:00)
+    expect(result[result.length - 1].description).toBe("ShopeeFood 16:00");
   });
 
   it("handles colon as separator in amount: 'Rp27:200'", () => {
-    // OCR sometimes reads comma/dot as colon
     const text = "18:25 Rp27:200";
     const result = parseShopeeFood(text);
 

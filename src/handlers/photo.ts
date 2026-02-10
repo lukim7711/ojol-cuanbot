@@ -192,10 +192,62 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 }
 
 /**
+ * Maximum OCR text length to send to AI.
+ *
+ * Bug #9 fix: OCR screenshots with many entries (e.g. full-day ShopeeFood
+ * history) can produce 1000-2000+ chars. Combined with the system prompt
+ * and tool definitions, this exceeds Llama Scout's input token limit,
+ * causing Workers AI error 3030 (Internal Server Error).
+ *
+ * 800 chars is enough for ~8-10 transactions (typical receipt/screenshot)
+ * while staying safely within the model's context window.
+ */
+const MAX_OCR_CHARS = 800;
+
+/**
+ * Noise patterns commonly found in OCR output from ojol screenshots.
+ * These lines add no financial value and waste tokens.
+ */
+const OCR_NOISE_PATTERNS = [
+  /alamat pelanggan disembunyikan/gi,
+  /alamat pengirim disembunyikan/gi,
+  /^\s*$/gm,                          // blank lines
+];
+
+/**
  * Build AI prompt from OCR-extracted text.
  * Adds context so AI knows this is from an image, not typed text.
+ *
+ * Bug #9 fix:
+ * 1. Remove noisy repetitive lines (e.g. "Alamat Pelanggan disembunyikan")
+ * 2. Truncate to MAX_OCR_CHARS to prevent token overflow
+ * 3. Add note about truncation so AI knows data may be incomplete
  */
 function buildOCRPrompt(ocrText: string, caption?: string): string {
+  // Step 1: Clean noise from OCR text
+  let cleanedText = ocrText;
+  for (const pattern of OCR_NOISE_PATTERNS) {
+    cleanedText = cleanedText.replace(pattern, "");
+  }
+
+  // Collapse multiple newlines into single
+  cleanedText = cleanedText.replace(/\n{3,}/g, "\n\n").trim();
+
+  // Step 2: Truncate if too long
+  let wasTruncated = false;
+  if (cleanedText.length > MAX_OCR_CHARS) {
+    // Try to cut at last complete line within limit
+    const cutPoint = cleanedText.lastIndexOf("\n", MAX_OCR_CHARS);
+    cleanedText = cleanedText.substring(0, cutPoint > 0 ? cutPoint : MAX_OCR_CHARS);
+    wasTruncated = true;
+  }
+
+  console.log(
+    `[Photo] OCR cleaned: ${ocrText.length} → ${cleanedText.length} chars` +
+    (wasTruncated ? " (truncated)" : "")
+  );
+
+  // Step 3: Build prompt
   let prompt = "";
 
   if (caption) {
@@ -205,12 +257,16 @@ function buildOCRPrompt(ocrText: string, caption?: string): string {
   }
 
   prompt += `Berikut teks yang di-extract dari gambar:\n\n\"\"\"
-${ocrText}
+${cleanedText}
 \"\"\"\n\n`;
 
   prompt += "Tolong analisa teks di atas dan catat transaksi yang relevan (pemasukan/pengeluaran). ";
   prompt += "Jika teks berisi data keuangan, extract semua transaksi. ";
   prompt += "Jika teks tidak berisi data keuangan, jelaskan apa isi gambar tersebut.";
+
+  if (wasTruncated) {
+    prompt += "\n\nNOTE: Teks di atas sudah dipotong karena terlalu panjang. Catat transaksi yang terlihat saja.";
+  }
 
   return prompt;
 }

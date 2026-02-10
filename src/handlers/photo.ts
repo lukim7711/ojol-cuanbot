@@ -1,22 +1,23 @@
 /**
  * Photo Handler — Image-to-Text-to-Transaction
  *
- * Flow:
+ * Flow (v2 — with local parser):
  * 1. User sends photo (screenshot/receipt/note)
  * 2. Download from Telegram API
  * 3. OCR via OCR.space (extract text)
- * 4. Feed extracted text to AI pipeline (same as message handler)
- * 5. AI parses into transactions → reply
+ * 4. Clean OCR text (remove noise)
+ * 5. TRY local parser first (regex, 0ms, no AI)
+ *    → If known format (ShopeeFood, SPX, etc.) → record directly
+ * 6. FALLBACK to AI pipeline (same as before)
+ *    → If unknown format → AI parses text
  *
- * Supports:
- * - Screenshots app ojol (Grab, Gojek, Maxim)
- * - Screenshots e-wallet (GoPay, OVO, Dana)
- * - Foto struk SPBU, nota makan, parkir
- * - Foto tulisan tangan
- * - Screenshot mutasi bank
+ * Performance:
+ *   Known format: 3.5s OCR + 0ms parse = 3.5s total
+ *   Unknown format: 3.5s OCR + 5-7s AI = 8-10s total
  *
- * Cost: ~42 neurons (AI) + 0 (OCR free tier)
- * Latency: ~3-5 seconds
+ * Cost:
+ *   Known format: 0 AI calls (saves daily budget)
+ *   Unknown format: 1 AI call (same as before)
  */
 
 import { Context } from "grammy";
@@ -28,6 +29,8 @@ import { processToolCalls } from "../services/router";
 import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
 import { isRateLimited } from "../middleware/rateLimit";
+import { tryParseOCR } from "../parsers/index";
+import { recordTransactions } from "../services/transaction";
 
 /**
  * Check if a photo message was already processed using KV.
@@ -136,26 +139,87 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 
     console.log(`[Photo] OCR extracted ${ocrResult.text.length} chars from user ${telegramId}`);
 
-    // 5. Get user and conversation history
+    // 5. Get user
     const displayName = ctx.from.first_name ?? "Driver";
     const user = await getOrCreateUser(env.DB, telegramId, displayName);
+    const caption = ctx.message.caption?.trim();
+
+    // ============================================
+    // 6a. LOCAL PARSER — Try known formats first
+    //     (0ms, no AI cost, no timeout risk)
+    // ============================================
+    const cleanedForParser = cleanOCRForParser(ocrResult.text);
+    const parseResult = tryParseOCR(cleanedForParser);
+
+    if (parseResult && parseResult.transactions.length > 0) {
+      console.log(
+        `[Photo] ✅ Local parser: ${parseResult.format}, ` +
+        `${parseResult.transactions.length} transactions, ` +
+        `dateOffset=${parseResult.dateOffset}, ` +
+        `confidence=${parseResult.confidence}`
+      );
+
+      // Record directly — reuse existing recordTransactions service
+      const sourceText = `[📷 ${parseResult.format}] ${parseResult.transactions.length} orders`;
+      const result = await recordTransactions(
+        env.DB,
+        user,
+        { transactions: parseResult.transactions },
+        sourceText
+      );
+
+      // Save conversation context
+      await saveConversation(
+        env.DB,
+        user.id,
+        "user",
+        `[📷 foto ${parseResult.format}] ${parseResult.transactions.length} transaksi terdeteksi`
+      );
+
+      // Format and send reply
+      const reply = formatReply([result], null);
+      if (reply && reply.trim().length > 0) {
+        // Add parser metadata to reply
+        const meta = `\n\n📋 <i>Auto-parsed dari ${formatLabel(parseResult.format)} (${parseResult.transactions.length} order)</i>`;
+        await ctx.reply(reply + meta, { parse_mode: "HTML" });
+
+        await saveConversation(
+          env.DB,
+          user.id,
+          "assistant",
+          `[parser: ${parseResult.format}]\n${reply}`
+        );
+      }
+
+      return; // Done! No AI needed.
+    }
+
+    // ============================================
+    // 6b. AI FALLBACK — Unknown format
+    //     (existing flow, for receipts/handwriting/etc.)
+    // ============================================
+    console.log(
+      `[Photo] Unknown format → AI fallback` +
+      (parseResult ? ` (detected ${parseResult.format} but 0 transactions)` : "")
+    );
+
+    // Get conversation history for AI context
     const history = await getRecentConversation(env.DB, user.id, 3);
     const conversationHistory = history.map((h: any) => ({
       role: h.role as "user" | "assistant",
       content: h.content,
     }));
 
-    // 6. Build prompt: tell AI this is OCR-extracted text
-    const caption = ctx.message.caption?.trim();
+    // Build AI prompt (with truncation for token safety)
     const ocrPrompt = buildOCRPrompt(ocrResult.text, caption);
 
-    // 7. Save user message (as OCR context)
+    // Save user message
     await saveConversation(env.DB, user.id, "user", `[📷 foto] ${caption || ""} → OCR: ${ocrResult.text.substring(0, 200)}...`);
 
-    // 8. Run AI pipeline (same as text messages)
+    // Run AI pipeline
     const aiResult = await runAI(env, user.id, ocrPrompt, conversationHistory);
 
-    // 9. Process tool calls (pass KV for delete confirmation)
+    // Process tool calls
     const results = await processToolCalls(
       env.DB,
       user,
@@ -164,13 +228,12 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
       env.RATE_LIMIT
     );
 
-    // 10. Format reply
+    // Format reply
     const reply = formatReply(results, aiResult.textResponse);
 
     if (reply && reply.trim().length > 0) {
       await ctx.reply(reply, { parse_mode: "HTML" });
 
-      // Save assistant reply
       const toolNames = aiResult.toolCalls.map((tc: any) => tc.name).join(", ");
       await saveConversation(
         env.DB,
@@ -192,66 +255,93 @@ export async function handlePhoto(ctx: Context, env: Env): Promise<void> {
 }
 
 /**
+ * Format label for user-facing messages.
+ */
+function formatLabel(format: string): string {
+  const labels: Record<string, string> = {
+    shopeefood: "ShopeeFood",
+    spx: "SPX Express",
+    grab: "GrabFood",
+    gopay: "GoPay",
+  };
+  return labels[format] || format;
+}
+
+/**
+ * Clean OCR text for local parser.
+ *
+ * Less aggressive than AI cleaning — we want to preserve structure
+ * for regex patterns. Only removes the most obvious noise.
+ *
+ * Unlike buildOCRPrompt cleaning:
+ * - NO truncation (parser handles any length)
+ * - NO char limit
+ * - Keeps line structure intact for regex matching
+ */
+function cleanOCRForParser(text: string): string {
+  let cleaned = text;
+
+  // Remove address noise (biggest source of clutter)
+  cleaned = cleaned.replace(/alamat pelanggan disembunyikan/gi, "");
+  cleaned = cleaned.replace(/alamat pengirim disembunyikan/gi, "");
+
+  // Tabs → spaces
+  cleaned = cleaned.replace(/\t+/g, " ");
+
+  // Remove pure noise lines but keep financial lines
+  cleaned = cleaned
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      // Keep lines that have time patterns or Rp amounts
+      // Remove standalone noise
+      if (/^>\s*$/.test(trimmed)) return false;
+      if (/^pesanan gabungan\s*$/i.test(trimmed)) return false;
+      return true;
+    })
+    .join("\n");
+
+  // Collapse excessive whitespace
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n").replace(/ {2,}/g, " ").trim();
+
+  return cleaned;
+}
+
+// ============================================
+// AI FALLBACK HELPERS (existing, unchanged)
+// ============================================
+
+/**
  * Maximum OCR text length to send to AI.
- *
  * Bug #9 fix (v2): Reduced from 800 → 500.
- * At 800 chars, cleaned text (746 chars) still caused 3030 when
- * combined with system prompt (~500 tokens) + tool defs (~800 tokens).
- *
- * Token budget estimate:
- *   Llama Scout context: ~8192 tokens
- *   System prompt: ~500 tokens
- *   Tool definitions (4 tools): ~800 tokens
- *   OCR text (500 chars): ~150 tokens
- *   Wrapper prompt: ~100 tokens
- *   Response budget: ~500 tokens
- *   Safety margin: ~6000 tokens
  */
 const MAX_OCR_CHARS = 500;
 
-/**
- * Noise patterns commonly found in OCR output from ojol screenshots.
- * These lines add no financial value and waste tokens.
- */
+/** Noise patterns for AI prompt cleaning */
 const OCR_NOISE_PATTERNS = [
   /alamat pelanggan disembunyikan/gi,
   /alamat pengirim disembunyikan/gi,
-  /^\s*$/gm,                          // blank lines
-  /\t+/g,                             // tab characters → space
+  /^\s*$/gm,
 ];
 
-/**
- * Lines that contain only non-financial noise (no Rp amount).
- * Used as secondary filter after pattern removal.
- */
 const OCR_NOISE_LINES = [
-  /^>\s*$/,                            // lone ">" from UI
-  /^\d\/\d+\s*$/,                      // lone "1/9" without amount
-  /^pesanan gabungan\s*$/i,            // standalone label
+  /^>\s*$/,
+  /^\d\/\d+\s*$/,
+  /^pesanan gabungan\s*$/i,
 ];
 
 /**
- * Build AI prompt from OCR-extracted text.
- * Adds context so AI knows this is from an image, not typed text.
- *
- * Bug #9 fix (v2): Aggressive cleaning + lower truncation limit.
- * Pipeline:
- *   1. Remove known noise patterns (addresses, tabs, blanks)
- *   2. Remove noise-only lines (UI artifacts)
- *   3. Collapse whitespace
- *   4. Truncate to MAX_OCR_CHARS at last complete line
+ * Build AI prompt from OCR text (used only for unknown formats).
  */
 function buildOCRPrompt(ocrText: string, caption?: string): string {
-  // Step 1: Clean noise patterns
   let cleanedText = ocrText;
   for (const pattern of OCR_NOISE_PATTERNS) {
-    cleanedText = cleanedText.replace(pattern, pattern === /\t+/g ? " " : "");
+    cleanedText = cleanedText.replace(pattern, "");
   }
 
-  // Replace tabs with spaces (the regex replace above may not catch all)
   cleanedText = cleanedText.replace(/\t+/g, " ");
 
-  // Step 2: Remove noise-only lines
   cleanedText = cleanedText
     .split("\n")
     .filter((line) => {
@@ -261,16 +351,13 @@ function buildOCRPrompt(ocrText: string, caption?: string): string {
     })
     .join("\n");
 
-  // Step 3: Collapse multiple newlines and spaces
   cleanedText = cleanedText
     .replace(/\n{3,}/g, "\n\n")
     .replace(/ {2,}/g, " ")
     .trim();
 
-  // Step 4: Truncate if too long
   let wasTruncated = false;
   if (cleanedText.length > MAX_OCR_CHARS) {
-    // Try to cut at last complete line within limit
     const cutPoint = cleanedText.lastIndexOf("\n", MAX_OCR_CHARS);
     cleanedText = cleanedText.substring(0, cutPoint > 0 ? cutPoint : MAX_OCR_CHARS);
     wasTruncated = true;
@@ -281,7 +368,6 @@ function buildOCRPrompt(ocrText: string, caption?: string): string {
     (wasTruncated ? " (truncated)" : "")
   );
 
-  // Step 5: Build prompt
   let prompt = "";
 
   if (caption) {

@@ -20,7 +20,25 @@ function createMockCtx(fromId?: number) {
   } as any;
 }
 
-const mockEnv = { DB: {} } as any;
+/**
+ * Mock KV namespace for testing.
+ * Simulates Cloudflare KV get/put/delete with an in-memory Map.
+ */
+function createMockKV() {
+  const store = new Map<string, string>();
+  return {
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    put: vi.fn(async (key: string, value: string, _opts?: any) => {
+      store.set(key, value);
+    }),
+    delete: vi.fn(async (key: string) => {
+      store.delete(key);
+    }),
+  };
+}
+
+let mockKV: ReturnType<typeof createMockKV>;
+let mockEnv: any;
 
 // ============================================
 // STEP 1: handleReset (shows warning only)
@@ -28,6 +46,8 @@ const mockEnv = { DB: {} } as any;
 describe("handleReset", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockKV = createMockKV();
+    mockEnv = { DB: {}, RATE_LIMIT: mockKV };
   });
 
   it("does nothing if ctx.from is missing", async () => {
@@ -57,6 +77,18 @@ describe("handleReset", () => {
     // Must NOT have called resetAllUserData
     expect(mockResetAllUserData).not.toHaveBeenCalled();
   });
+
+  it("stores pending reset in KV", async () => {
+    mockFindUserByTelegram.mockResolvedValue({ id: 1 });
+
+    await handleReset(createMockCtx(123), mockEnv);
+
+    expect(mockKV.put).toHaveBeenCalledWith(
+      "reset:123",
+      "1",
+      { expirationTtl: 60 }
+    );
+  });
 });
 
 // ============================================
@@ -65,6 +97,8 @@ describe("handleReset", () => {
 describe("handleConfirmReset", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockKV = createMockKV();
+    mockEnv = { DB: {}, RATE_LIMIT: mockKV };
   });
 
   it("does nothing if ctx.from is missing", async () => {
@@ -95,11 +129,11 @@ describe("handleConfirmReset", () => {
       user_settings: 2,
     });
 
-    // Step 1: /reset → sets pending
+    // Step 1: /reset → sets pending in KV
     await handleReset(createMockCtx(telegramId), mockEnv);
     expect(mockResetAllUserData).not.toHaveBeenCalled();
 
-    // Step 2: /confirm_reset → executes deletion
+    // Step 2: /confirm_reset → reads KV, executes deletion
     mockReply.mockClear();
     await handleConfirmReset(createMockCtx(telegramId), mockEnv);
 
@@ -194,5 +228,24 @@ describe("handleConfirmReset", () => {
 
     expect(mockReply.mock.calls[0][0]).toContain("belum terdaftar");
     expect(mockResetAllUserData).not.toHaveBeenCalled();
+  });
+
+  it("clears KV key after confirm_reset", async () => {
+    mockFindUserByTelegram.mockResolvedValue({ id: 1 });
+    mockResetAllUserData.mockResolvedValue({
+      debt_payments: 0, debts: 0, transactions: 1,
+      conversation_logs: 0, obligations: 0, goals: 0, user_settings: 0,
+    });
+
+    await handleReset(createMockCtx(800), mockEnv);
+    await handleConfirmReset(createMockCtx(800), mockEnv);
+
+    // KV key should be deleted after successful confirm
+    expect(mockKV.delete).toHaveBeenCalledWith("reset:800");
+
+    // Second confirm should fail (key already cleared)
+    mockReply.mockClear();
+    await handleConfirmReset(createMockCtx(800), mockEnv);
+    expect(mockReply.mock.calls[0][0]).toContain("Tidak ada permintaan reset aktif");
   });
 });

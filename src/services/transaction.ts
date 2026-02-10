@@ -28,9 +28,22 @@ export async function recordTransactions(
 
     const trxDate = getDateFromOffset(t.date_offset ?? 0);
 
-    // Cari category ID
-    const cat = await findCategoryByName(db, t.type, t.category);
-    const categoryId = cat?.id ?? null; // null → "lainnya" fallback
+    // ============================================
+    // Bug 5 fix: Category fallback to "lainnya"
+    // If AI sends a category name not in the DB (e.g. "jajan"),
+    // fall back to the "lainnya" category for that type.
+    // This prevents null category_id which breaks edit-by-category.
+    // ============================================
+    let cat = await findCategoryByName(db, t.type, t.category);
+    if (!cat) {
+      if (t.category && t.category !== "lainnya") {
+        console.warn(
+          `[Transaction] Category "${t.category}" not found for type "${t.type}". Falling back to "lainnya".`
+        );
+      }
+      cat = await findCategoryByName(db, t.type, "lainnya");
+    }
+    const categoryId = cat?.id ?? null;
 
     await insertTransaction(
       db,

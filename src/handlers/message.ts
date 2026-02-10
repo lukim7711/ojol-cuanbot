@@ -7,6 +7,7 @@ import { getRecentConversation, saveConversation } from "../db/repository";
 import { formatReply } from "../utils/formatter";
 import { isRateLimited } from "../middleware/rateLimit";
 import { sanitizeUserInput, hasInjectionPatterns } from "../middleware/inputGuard";
+import { getPendingDelete } from "../services/deleteConfirm";
 
 /**
  * Check if a message was already processed using KV.
@@ -58,6 +59,19 @@ function buildToolContext(toolCalls: Array<{ name: string; arguments: any }>): s
 
   return `[tools_used: ${parts.join("; ")}]\n`;
 }
+
+/**
+ * Words that indicate a confirmation reply to a pending delete.
+ * When detected AND a pending delete exists in KV,
+ * we skip the AI pipeline entirely (Bug 4 fix).
+ *
+ * Saves ~42 neurons + ~3s latency per confirmation.
+ * Also avoids polluting conversation_logs with "ya".
+ */
+const CONFIRM_WORDS = new Set([
+  "ya", "iya", "yes", "y",
+  "batal", "cancel", "tidak", "no", "n", "ga", "gak", "nggak",
+]);
 
 export async function handleMessage(
   ctx: Context,
@@ -112,6 +126,28 @@ export async function handleMessage(
 
     // 1. Get or create user
     const user = await getOrCreateUser(env.DB, telegramId, displayName);
+
+    // ============================================
+    // FAST PATH: Confirmation replies skip AI (Bug 4 fix)
+    // If user says "ya"/"batal" and there's a pending delete in KV,
+    // go directly to router — no AI call, no conversation log pollution.
+    // ============================================
+    const lowerCleaned = cleanedText.toLowerCase().trim();
+    if (CONFIRM_WORDS.has(lowerCleaned)) {
+      const pending = await getPendingDelete(env.RATE_LIMIT, String(user.id));
+      if (pending) {
+        console.log(`[FastPath] Confirmation "${lowerCleaned}" for pending delete. Skipping AI.`);
+        const results = await processToolCalls(
+          env.DB, user, [], cleanedText, env.RATE_LIMIT
+        );
+        const reply = formatReply(results, null);
+        if (reply && reply.trim().length > 0) {
+          await ctx.reply(reply, { parse_mode: "HTML" });
+          await saveConversation(env.DB, user.id, "assistant", reply);
+        }
+        return;
+      }
+    }
 
     // 2. Get recent conversation (3 messages) for context
     const history = await getRecentConversation(env.DB, user.id, 3);

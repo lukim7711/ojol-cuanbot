@@ -289,22 +289,33 @@ export async function editGoal(
   return { type: "clarification", data: null, message: "Aksi tidak dikenal." };
 }
 
+/**
+ * Get income progress against daily target.
+ * Called after recording income to show auto-appended progress.
+ *
+ * Bug 7 fix: Previously ran 4 queries to check hasComponents,
+ * then called calculateDailyTarget which ran the same 4 queries again
+ * (10 total, 4 duplicates). Now calls calculateDailyTarget once (6 queries)
+ * and checks the result.
+ *
+ * Trade-off: Users without any target components now run 6 queries
+ * instead of 4 (early exit). But this path is rare — users who record
+ * income almost always have obligations/goals set up.
+ */
 export async function getIncomeProgress(
   db: D1Database,
   user: User
 ): Promise<TargetBreakdown | null> {
-  const oblResult = await getActiveObligations(db, user.id);
-  const goalsResult = await getActiveGoals(db, user.id);
-  const savingSetting = await getUserSetting(db, user.id, "daily_saving");
-  const debtResult = await getActiveDebts(db, user.id);
+  const breakdown = await calculateDailyTarget(db, user);
 
+  // Check if user has any target components set up
   const hasComponents =
-    oblResult.results.length > 0 ||
-    goalsResult.results.length > 0 ||
-    (savingSetting && parseInt(savingSetting) > 0) ||
-    debtResult.results.length > 0;
+    breakdown.obligations.length > 0 ||
+    breakdown.goals.length > 0 ||
+    breakdown.dailySaving > 0 ||
+    breakdown.debtInstallments.length > 0;
 
   if (!hasComponents) return null;
 
-  return calculateDailyTarget(db, user);
+  return breakdown;
 }

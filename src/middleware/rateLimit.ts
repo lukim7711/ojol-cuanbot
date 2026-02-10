@@ -8,19 +8,22 @@
  *
  * KV key format: rl:{userId}
  * KV value: JSON { count: number, start: number (epoch seconds) }
- * KV expiration: absolute epoch = start + WINDOW_SECONDS (min now+60)
+ * KV expiration: absolute epoch = max(start + WINDOW, now + 65)
  *
- * Bug #10 fix: Cloudflare KV requires `expiration` to be at least
- * 60 seconds in the future. When the window has < 60s remaining,
- * `data.start + WINDOW_SECONDS` could be < now + 60 → KV rejects.
- * Fix: Use Math.max to ensure expiration is always valid.
+ * Bug #8 fix: Use absolute `expiration` instead of relative `expirationTtl`.
+ * Bug #10 fix: Ensure expiration >= now + KV_MIN_FUTURE_SECONDS.
+ * Bug #10 v2: Increased margin to 65s (from 60s) to handle clock skew.
  */
 
 const MAX_MESSAGES = 30;
 const WINDOW_SECONDS = 60;
 
-/** Cloudflare KV minimum: expiration must be at least this many seconds in the future */
-const KV_MIN_FUTURE_SECONDS = 60;
+/**
+ * Cloudflare KV minimum: expiration must be at least 60 seconds in the future.
+ * We use 65 to add a 5-second safety margin for clock skew between
+ * the Worker runtime and KV storage backend.
+ */
+const KV_MIN_FUTURE_SECONDS = 65;
 
 interface RateLimitEntry {
   count: number;
@@ -79,7 +82,6 @@ export async function isRateLimited(
     return false;
   } catch (error) {
     // If KV fails, ALLOW the request (fail-open)
-    // Better to let a spammer through than block all users
     console.error("[RateLimit] KV error, failing open:", error);
     return false;
   }

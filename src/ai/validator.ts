@@ -4,6 +4,8 @@
  * casual chat / financial input / action queries.
  *
  * Phase 3: Added delete limiter — max 1 delete operation per request.
+ * Bug #11 fix: Dedup uses name + arguments hash (not name only)
+ *              so multiple record_debt with different args are allowed.
  */
 
 import { AIResult } from "./parser";
@@ -27,6 +29,30 @@ export function isCasualChat(text: string): boolean {
   if (lower.split(/\s+/).length > 4) return false;
 
   return casualPatterns.some((p) => p.test(lower));
+}
+
+/**
+ * Build a dedup key for a tool call.
+ *
+ * Bug #11 fix: Previously used tool `name` only — this caused all
+ * duplicate tool names to be dropped even when arguments differ.
+ * Example: 4× record_debt with 4 different installments → only 1 kept.
+ *
+ * New approach: name + sorted JSON of arguments (excluding internal keys)
+ * so identical calls are deduped but different args are allowed.
+ */
+function buildDedupKey(name: string, args: Record<string, any>): string {
+  // Exclude internal validation keys
+  const cleanArgs: Record<string, any> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (!k.startsWith("_")) {
+      cleanArgs[k] = v;
+    }
+  }
+
+  // Sort keys for consistent hashing
+  const sortedJson = JSON.stringify(cleanArgs, Object.keys(cleanArgs).sort());
+  return `${name}:${sortedJson}`;
 }
 
 /**
@@ -139,12 +165,16 @@ export function validateToolCalls(result: AIResult): AIResult {
     return true;
   });
 
-  // Deduplicate: if same tool called multiple times, keep only first
+  // ============================================
+  // Bug #11 fix: Deduplicate by name + arguments
+  // Same tool with DIFFERENT arguments is allowed.
+  // Only truly identical calls (same name + same args) are deduped.
+  // ============================================
   const seen = new Set<string>();
   result.toolCalls = result.toolCalls.filter((tc) => {
-    const key = tc.name;
+    const key = buildDedupKey(tc.name, tc.arguments);
     if (seen.has(key)) {
-      console.warn(`[Validate] Duplicate tool call: ${key}. Removing.`);
+      console.warn(`[Validate] Duplicate tool call: ${tc.name} (identical args). Removing.`);
       return false;
     }
     seen.add(key);

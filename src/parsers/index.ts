@@ -14,7 +14,7 @@
 
 import { ParsedTransaction } from "../types/transaction";
 import { detectFormat, OCRFormat } from "./detector";
-import { parseShopeeFood } from "./shopeefood";
+import { parseShopee } from "./shopee";
 
 export interface ParseResult {
   /** Detected format */
@@ -43,16 +43,13 @@ export function tryParseOCR(cleanedText: string): ParseResult | null {
   let transactions: ParsedTransaction[] = [];
 
   switch (detection.format) {
-    case "shopeefood":
-      transactions = parseShopeeFood(cleanedText);
+    case "shopee":
+      transactions = parseShopee(cleanedText);
       break;
 
     // Future parsers:
-    // case "spx":
-    //   transactions = parseSPX(cleanedText);
-    //   break;
     // case "grab":
-    //   transactions = parseGrabFood(cleanedText);
+    //   transactions = parseGrab(cleanedText);
     //   break;
 
     default:
@@ -87,7 +84,7 @@ export function tryParseOCR(cleanedText: string): ParseResult | null {
 /**
  * Detect date offset from OCR text header.
  *
- * ShopeeFood screenshots typically start with:
+ * Shopee screenshots typically start with:
  *   "09 Feb 2026 ~"
  *
  * Compares to current date (WIB) to calculate offset.

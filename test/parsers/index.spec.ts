@@ -7,7 +7,7 @@ describe("tryParseOCR", () => {
     expect(result).toBeNull();
   });
 
-  it("parses ShopeeFood text successfully", () => {
+  it("parses ShopeeFood text as shopee format", () => {
     const text = [
       "10 Feb 2026",
       "22:30 ShopeeFood Rp18,400",
@@ -18,25 +18,48 @@ describe("tryParseOCR", () => {
     const result = tryParseOCR(text);
 
     expect(result).not.toBeNull();
-    expect(result!.format).toBe("shopeefood");
+    expect(result!.format).toBe("shopee");
     expect(result!.transactions.length).toBe(2);
     expect(result!.confidence).toBe("high");
   });
 
-  it("returns null for detected format with 0 parseable transactions", () => {
-    // Has ShopeeFood keyword but no valid Rp amounts
-    const result = tryParseOCR("ShopeeFood app version 3.2.1");
-    expect(result).toBeNull();
+  it("parses SPX text as shopee format", () => {
+    const text = [
+      "10 Feb 2026",
+      "18:25 SPX Instant (Marketplace) Rp27,200",
+      "17:06 SPX Standard Rp30,400",
+    ].join("\n");
+
+    const result = tryParseOCR(text);
+
+    expect(result).not.toBeNull();
+    expect(result!.format).toBe("shopee");
+    expect(result!.transactions.length).toBe(2);
   });
 
-  it("returns null for SPX (parser not yet implemented)", () => {
-    const result = tryParseOCR("SPX Express Rp8,000");
+  it("parses mixed ShopeeFood + SPX as single shopee format", () => {
+    const text = [
+      "10 Feb 2026",
+      "22:30 ShopeeFood Rp18,400",
+      "18:25 SPX Instant (Marketplace) Rp27,200",
+    ].join("\n");
+
+    const result = tryParseOCR(text);
+
+    expect(result).not.toBeNull();
+    expect(result!.format).toBe("shopee");
+    expect(result!.transactions.length).toBe(2);
+    expect(result!.transactions[0].description).toBe("ShopeeFood 22:30");
+    expect(result!.transactions[1].description).toBe("SPX 18:25");
+  });
+
+  it("returns null for detected format with 0 parseable transactions", () => {
+    const result = tryParseOCR("ShopeeFood app version 3.2.1");
     expect(result).toBeNull();
   });
 });
 
 describe("detectDateOffset", () => {
-  // We need to mock Date.now() for predictable tests
   beforeEach(() => {
     // Mock: "today" is 10 Feb 2026, 14:00 WIB (07:00 UTC)
     vi.useFakeTimers();
